@@ -1,0 +1,178 @@
+import json
+import time
+from typing import Optional
+
+from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi.responses import PlainTextResponse, JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from opentelemetry import trace
+
+from app.config import get_settings
+from app.database import init_db, get_db, WebhookEvent
+from app.redis_client import get_redis, close_redis
+from app.security import security
+from app.webhook_handler import WebhookNormalizer, MessageClassifier
+from app.queue import publisher
+from app.telemetry import setup_telemetry
+
+settings = get_settings()
+tracer = trace.get_tracer("wax_gateway")
+normalizer = WebhookNormalizer()
+
+app = FastAPI(title="Wax Prep Gateway", version="1.0.0")
+logger = setup_telemetry(app)
+
+
+@app.on_event("startup")
+async def startup():
+    await init_db()
+    logger.info("wax_gateway_startup", environment=settings.ENVIRONMENT)
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await close_redis()
+    logger.info("wax_gateway_shutdown")
+
+
+@app.get("/health")
+async def health():
+    redis = await get_redis()
+    try:
+        await redis.ping()
+        redis_status = "ok"
+    except Exception:
+        redis_status = "degraded"
+    
+    return {
+        "status": "ok" if redis_status == "ok" else "degraded",
+        "redis": redis_status,
+        "version": "1.0.0",
+        "stage": "webhook"
+    }
+
+
+@app.get("/webhook")
+async def verify_webhook(
+    hub_mode: str,
+    hub_verify_token: str,
+    hub_challenge: str
+):
+    """Meta WhatsApp webhook verification."""
+    if hub_mode != "subscribe":
+        raise HTTPException(status_code=400, detail="Invalid mode")
+    
+    if hub_verify_token != settings.WHATSAPP_VERIFY_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid token")
+    
+    logger.info("webhook_verified")
+    return PlainTextResponse(content=hub_challenge)
+
+
+@app.post("/webhook")
+async def receive_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Receive WhatsApp events. Ack immediately. Process async."""
+    start_time = time.time()
+    
+    # 1. Get raw body (CRITICAL: must be raw for HMAC)
+    raw_body = await request.body()
+    
+    # 2. IP Allowlist
+    client_ip = request.headers.get("x-forwarded-for", request.client.host)
+    if not security.is_ip_allowed(client_ip.split(",")[0].strip()):
+        logger.warning("ip_blocked", ip=client_ip)
+        raise HTTPException(status_code=403, detail="IP not allowed")
+    
+    # 3. Signature Verification
+    signature = request.headers.get("x-hub-signature-256")
+    if not security.verify_signature(raw_body, signature):
+        logger.warning("signature_invalid", ip=client_ip)
+        raise HTTPException(status_code=403, detail="Invalid signature")
+    
+    # 4. Parse payload
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    
+    # 5. Classify and normalize
+    normalized = normalizer.normalize(payload)
+    if not normalized:
+        # Unknown event type, still ack to prevent retries
+        return JSONResponse(content={"status": "ignored"})
+    
+    # 6. Rate Limiting
+    phone = normalized.get("phone_number", "")
+    if not await security.check_rate_limit(phone):
+        logger.warning("rate_limit_hit", phone=phone)
+        return JSONResponse(content={"status": "rate_limited"})
+    
+    # 7. Idempotency check
+    message_id = normalized.get("message_id", "")
+    fingerprint = normalized.get("fingerprint", "")
+    
+    redis = await get_redis()
+    idempotency_key = f"idempotency:{message_id}"
+    
+    try:
+        is_duplicate = await redis.exists(idempotency_key)
+        if is_duplicate:
+            logger.info("duplicate_dropped", message_id=message_id, fingerprint=fingerprint)
+            return JSONResponse(content={"status": "duplicate"})
+        
+        # Set idempotency with 24h TTL
+        await redis.setex(idempotency_key, 86400, fingerprint)
+    except Exception:
+        # Redis down? Continue anyway, we'll dedup via DB later
+        pass
+    
+    # 8. Encrypt and persist to event store (immutable log)
+    sealed_payload = security.seal_payload(raw_body.decode())
+    stream_type = MessageClassifier.classify(payload)
+    stream_name = f"{settings.REDIS_STREAM_PREFIX}:{stream_type}"
+    
+    event_log = WebhookEvent(
+        event_id=message_id or fingerprint,
+        payload_encrypted=sealed_payload,
+        signature=signature or "",
+        stream_name=stream_name
+    )
+    db.add(event_log)
+    await db.commit()
+    
+    # 9. Publish to Redis Streams
+    try:
+        stream, msg_id = await publisher.publish(normalized, raw_body.decode())
+        logger.info(
+            "message_enqueued",
+            wax_id=normalized["wax_id"],
+            stream=stream,
+            msg_id=msg_id,
+            latency_ms=round((time.time() - start_time) * 1000, 2)
+        )
+    except Exception as e:
+        # Graceful degradation: Redis down
+        # Message is already in PostgreSQL. A sweeper will re-queue it.
+        logger.error("redis_publish_failed", error=str(e), wax_id=normalized["wax_id"])
+        
+        # Store in overflow for sweeper
+        overflow_key = f"overflow:{message_id}"
+        await db.execute(
+            __import__('sqlalchemy').text(
+                "INSERT INTO webhook_events (event_id, payload_encrypted, signature, stream_name) "
+                "VALUES (:eid, :payload, :sig, :stream)"
+            ),
+            {
+                "eid": f"overflow:{message_id}",
+                "payload": sealed_payload,
+                "sig": signature or "",
+                "stream": f"{stream_name}:overflow"
+            }
+        )
+        await db.commit()
+    
+    # 10. Return 200 immediately (Meta requires this under 5-10s)
+    return JSONResponse(content={"status": "received", "trace_id": normalized.get("trace_id")})
