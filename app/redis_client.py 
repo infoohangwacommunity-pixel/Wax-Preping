@@ -7,12 +7,14 @@ _redis_pool = None
 
 async def get_redis():
     global _redis_pool
+    if not _settings.REDIS_URL:
+        return None
     if _redis_pool is None:
         _redis_pool = redis.from_url(
             _settings.REDIS_URL,
             encoding="utf-8",
             decode_responses=True,
-            max_connections=50
+            max_connections=20
         )
     return _redis_pool
 
