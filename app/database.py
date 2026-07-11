@@ -121,9 +121,13 @@ async def get_db():
 
 
 class AsyncSessionLocal:
-    @classmethod
-    async def __aenter__(cls):
-        return _get_session_local()()
-    @classmethod
-    async def __aexit__(cls, exc_type, exc_val, exc_tb):
-        pass
+    def __init__(self):
+        self.session = None
+    
+    async def __aenter__(self):
+        self.session = _get_session_local()()
+        return self.session
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
