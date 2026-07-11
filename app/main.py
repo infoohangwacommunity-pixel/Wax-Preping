@@ -76,7 +76,7 @@ async def shutdown():
     logger.info("gateway_shutdown")
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
     return {
         "status": "ok",
