@@ -1,0 +1,87 @@
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import declarative_base
+from sqlalchemy import Column, String, DateTime, Integer, Text, Index, UniqueConstraint
+from datetime import datetime
+
+from app.config import get_settings
+
+settings = get_settings()
+
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    echo=settings.ENVIRONMENT == "development",
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True
+)
+
+AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+Base = declarative_base()
+
+
+class WaxUser(Base):
+    __tablename__ = "wax_users"
+    
+    id = Column(String(32), primary_key=True)  # Wax ID
+    phone_hash = Column(String(64), nullable=False, index=True)
+    phone_country = Column(String(5), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    metadata_json = Column(Text, nullable=True)  # For future platform linking
+    
+    __table_args__ = (
+        UniqueConstraint('phone_hash', name='uix_phone_hash'),
+    )
+
+
+class WebhookEvent(Base):
+    __tablename__ = "webhook_events"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(128), nullable=False, index=True)
+    payload_encrypted = Column(Text, nullable=False)
+    signature = Column(String(128), nullable=False)
+    stream_name = Column(String(64), nullable=False)
+    received_at = Column(DateTime, default=datetime.utcnow)
+    processed_at = Column(DateTime, nullable=True)
+    
+    __table_args__ = (
+        Index('ix_event_id', 'event_id'),
+    )
+
+
+class MessageStatus(Base):
+    __tablename__ = "message_statuses"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    message_id = Column(String(128), nullable=False, index=True)
+    phone_number = Column(String(32), nullable=False, index=True)
+    status = Column(String(20), nullable=False)  # sent, delivered, read, failed
+    timestamp = Column(Integer, nullable=False)  # WhatsApp timestamp
+    received_at = Column(DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        Index('ix_msg_status', 'message_id', 'status', unique=True),
+    )
+
+
+class DeadLetter(Base):
+    __tablename__ = "dead_letters"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(128), nullable=False)
+    payload_encrypted = Column(Text, nullable=False)
+    error = Column(Text, nullable=False)
+    retry_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+async def init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+async def get_db():
+    async with AsyncSessionLocal() as session:
+        yield session
