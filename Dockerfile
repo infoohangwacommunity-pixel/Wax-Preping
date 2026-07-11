@@ -2,7 +2,6 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
@@ -12,6 +11,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
+
+# DEBUG: If import fails here, the build fails with the REAL traceback
+RUN python -c "import sys; sys.path.insert(0, '/app'); import app.main; print('BUILD: app.main imported OK')"
 
 EXPOSE 8000
 
