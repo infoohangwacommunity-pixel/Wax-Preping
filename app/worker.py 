@@ -1,0 +1,186 @@
+import json
+import asyncio
+import signal
+from typing import Dict, Any
+
+import httpx
+from opentelemetry import trace
+
+from app.config import get_settings
+from app.redis_client import get_redis, close_redis
+from app.security import security
+from app.database import AsyncSessionLocal, MessageStatus, DeadLetter
+from app.webhook_handler import StateMachine
+from app.telemetry import setup_telemetry
+
+settings = get_settings()
+tracer = trace.get_tracer("wax_worker")
+state_machine = StateMachine()
+
+
+class Worker:
+    def __init__(self):
+        self.running = True
+        self.consumer_group = "wax_workers"
+        self.consumer_name = f"worker-{__import__('os').getpid()}"
+        self.streams = [
+            f"{settings.REDIS_STREAM_PREFIX}:text",
+            f"{settings.REDIS_STREAM_PREFIX}:status",
+            f"{settings.REDIS_STREAM_PREFIX}:reaction",
+            f"{settings.REDIS_STREAM_PREFIX}:interactive",
+            f"{settings.REDIS_STREAM_PREFIX}:location",
+            f"{settings.REDIS_STREAM_PREFIX}:unknown",
+        ]
+    
+    async def setup(self):
+        redis = await get_redis()
+        for stream in self.streams:
+            try:
+                await redis.xgroup_create(stream, self.consumer_group, id="0", mkstream=True)
+            except Exception:
+                pass  # Group already exists
+    
+    async def run(self):
+        await self.setup()
+        redis = await get_redis()
+        
+        while self.running:
+            try:
+                # Read from all streams with 5s block
+                entries = await redis.xreadgroup(
+                    groupname=self.consumer_group,
+                    consumername=self.consumer_name,
+                    streams={s: ">" for s in self.streams},
+                    count=10,
+                    block=5000
+                )
+                
+                for stream_name, messages in entries:
+                    for msg_id, fields in messages:
+                        await self._process_message(stream_name, msg_id, fields)
+                        
+            except Exception as e:
+                print(f"Worker error: {e}")
+                await asyncio.sleep(1)
+    
+    async def _process_message(self, stream_name: str, msg_id: str, fields: Dict[str, Any]):
+        with tracer.start_as_current_span("process_message") as span:
+            span.set_attribute("stream", stream_name)
+            span.set_attribute("msg_id", msg_id)
+            
+            try:
+                # Decrypt
+                sealed_normalized = fields.get("sealed_normalized", "")
+                normalized = json.loads(security.unseal_payload(sealed_normalized))
+                
+                span.set_attribute("wax_id", normalized.get("wax_id"))
+                span.set_attribute("event_type", normalized.get("event_type"))
+                
+                # Handle status state machine
+                if normalized["event_type"] == "status":
+                    await self._handle_status(normalized)
+                
+                # Forward to AI team
+                if settings.AI_TEAM_WEBHOOK_URL:
+                    await self._forward_to_ai(normalized, fields)
+                
+                # Acknowledge in Redis
+                redis = await get_redis()
+                await redis.xack(stream_name, self.consumer_group, msg_id)
+                
+            except Exception as e:
+                # Move to retry or dead letter
+                attempt = fields.get("retry_attempt", 0)
+                if attempt < settings.MAX_RETRIES:
+                    await self._retry(fields, attempt + 1)
+                else:
+                    await self._dead_letter(fields, str(e))
+                    redis = await get_redis()
+                    await redis.xack(stream_name, self.consumer_group, msg_id)
+    
+    async def _handle_status(self, normalized: Dict[str, Any]):
+        async with AsyncSessionLocal() as session:
+            # Check current state
+            from sqlalchemy import select
+            result = await session.execute(
+                select(MessageStatus).where(
+                    MessageStatus.message_id == normalized["message_id"]
+                ).order_by(MessageStatus.timestamp.desc())
+            )
+            current = result.scalar_one_or_none()
+            current_status = current.status if current else None
+            
+            new_status = normalized["status"]
+            
+            # Infer missing states
+            inferences = state_machine.infer_missing_states(current_status, new_status)
+            
+            if state_machine.can_transition(current_status, new_status):
+                for inferred in inferences:
+                    session.add(MessageStatus(
+                        message_id=normalized["message_id"],
+                        phone_number=normalized["phone_number"],
+                        status=inferred,
+                        timestamp=normalized["timestamp"] - 1,
+                        received_at=__import__('datetime').datetime.utcnow()
+                    ))
+                
+                session.add(MessageStatus(
+                    message_id=normalized["message_id"],
+                    phone_number=normalized["phone_number"],
+                    status=new_status,
+                    timestamp=normalized["timestamp"],
+                    received_at=__import__('datetime').datetime.utcnow()
+                ))
+                await session.commit()
+    
+    async def _forward_to_ai(self, normalized: Dict[str, Any], fields: Dict[str, Any]):
+        headers = {"Content-Type": "application/json"}
+        if settings.AI_TEAM_API_KEY:
+            headers["X-API-Key"] = settings.AI_TEAM_API_KEY
+        
+        # Include trace ID for distributed tracing
+        headers["X-Trace-ID"] = normalized.get("trace_id", "")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                settings.AI_TEAM_WEBHOOK_URL,
+                json=normalized,
+                headers=headers
+            )
+            response.raise_for_status()
+    
+    async def _retry(self, fields: Dict[str, Any], attempt: int):
+        from app.queue import publisher
+        normalized = json.loads(security.unseal_payload(fields["sealed_normalized"]))
+        await publisher.publish_retry(normalized, attempt)
+    
+    async def _dead_letter(self, fields: Dict[str, Any], error: str):
+        async with AsyncSessionLocal() as session:
+            session.add(DeadLetter(
+                event_id=fields.get("message_id", "unknown"),
+                payload_encrypted=fields.get("sealed_normalized", ""),
+                error=error,
+                retry_count=fields.get("retry_attempt", 0)
+            ))
+            await session.commit()
+    
+    def stop(self):
+        self.running = False
+
+
+async def run_worker():
+    worker = Worker()
+    
+    def handle_signal(sig, frame):
+        worker.stop()
+    
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+    
+    await worker.run()
+    await close_redis()
+
+
+if __name__ == "__main__":
+    asyncio.run(run_worker())
