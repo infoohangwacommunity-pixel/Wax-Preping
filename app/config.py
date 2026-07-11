@@ -10,15 +10,13 @@ class Settings(BaseSettings):
     WHATSAPP_APP_SECRET: str = Field(...)
     WHATSAPP_PHONE_NUMBER_ID: str = Field(...)
     
-    # FIXED: Changed from str to Optional[str] to handle the list validator
-    ALLOWED_IP_RANGES: Optional[str] = Field(default="")
+    ALLOWED_IP_RANGES: List[str] = Field(default_factory=list)
     RATE_LIMIT_PER_PHONE: int = Field(default=30)
     RATE_LIMIT_GLOBAL: int = Field(default=1000)
     
     ENCRYPTION_KEY: str = Field(...)
     
     DATABASE_URL: str = Field(default="postgresql+asyncpg://user:pass@host.neon.tech/db?ssl=require")
-    REDIS_URL: Optional[str] = Field(default=None)
     
     AI_TEAM_WEBHOOK_URL: Optional[str] = Field(default=None)
     AI_TEAM_API_KEY: Optional[str] = Field(default=None)
@@ -31,11 +29,11 @@ class Settings(BaseSettings):
     @field_validator("ALLOWED_IP_RANGES", mode="before")
     @classmethod
     def parse_ip_ranges(cls, v):
-        if v is None or v == "":
+        if not v:
             return []
-        if isinstance(v, list):
-            return v
-        return [x.strip() for x in v.split(",") if x.strip()]
+        if isinstance(v, str):
+            return [x.strip() for x in v.split(",") if x.strip()]
+        return v
     
     @field_validator("ENCRYPTION_KEY", mode="before")
     @classmethod
