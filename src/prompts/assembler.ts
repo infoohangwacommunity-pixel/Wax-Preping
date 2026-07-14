@@ -1,117 +1,112 @@
-// The prompt assembler builds the full context window from separate segments.
-// Each segment is independently testable and swappable.
-// This is NOT a single giant system prompt.
-// It is a layered, dynamic construction that changes every turn.
-
-import type { WorkingMemorySnapshot, PlannerForceEmitted } from "../types/events";
-import type { StudentProfile } from "../types/student";
-import type { LLMMessage } from "../types/llm";
+import type { WorkingMemorySnapshot, PedagogicalIntent, StudentProfile } from '../types/student';
+import type { ForceVector } from '../types/events';
+import type { LLMMessage } from '../types/llm';
 import {
   CORE_PERSONA,
-  MEMORY_INJECTION_TEMPLATE,
-  WORKING_MEMORY_TEMPLATE,
-  FORCE_VECTOR_TEMPLATE,
-} from "./persona";
+  buildMemorySegment,
+  buildWorkingMemorySegment,
+  buildForceVectorSegment,
+  STRUCTURED_OUTPUT_INSTRUCTION,
+} from './persona';
 
 export function assemblePrompt(
   rawMessage: string,
-  workingMemory: WorkingMemorySnapshot,
-  forceVector: PlannerForceEmitted["forceVector"],
+  wm: WorkingMemorySnapshot,
+  fv: ForceVector,
   profile: StudentProfile,
-  ragContext?: string
+  options: {
+    ragContext?: string;
+    visionContext?: Record<string, unknown>;
+    examCountdownMessage?: string;
+    spacedReviewNote?: string;
+    streakMessage?: string;
+    dueReviews?: string;
+    isFirstMessage?: boolean;
+    studyPlanContext?: string;
+  } = {}
 ): LLMMessage[] {
   const messages: LLMMessage[] = [];
 
-  // 1. Core persona (always present, highest priority)
-  messages.push({
-    role: "system",
-    content: CORE_PERSONA,
-  });
+  // 1. Core persona
+  messages.push({ role: 'system', content: CORE_PERSONA });
 
-  // 2. Persistent memory (what the AI knows about this student from past sessions)
-  const memoryContent = MEMORY_INJECTION_TEMPLATE(
-    profile.memoryBlocks.humanProfile,
-    profile.memoryBlocks.learningStyle,
-    profile.memoryBlocks.progress,
-    profile.memoryBlocks.shameMap,
-    profile.memoryBlocks.curiosityMap,
-    profile.memoryBlocks.procedural
-  );
-
-  messages.push({
-    role: "system",
-    content: memoryContent,
-  });
-
-  // 3. Ephemeral working memory (this session only)
-  messages.push({
-    role: "system",
-    content: WORKING_MEMORY_TEMPLATE(workingMemory),
-  });
-
-  // 4. Force vector (how the Planner wants this response to feel)
-  messages.push({
-    role: "system",
-    content: FORCE_VECTOR_TEMPLATE(forceVector),
-  });
-
-  // 5. RAG context (curriculum content if the AI searched for something)
-  if (ragContext && ragContext.trim().length > 0) {
+  // 2. First message note
+  if (options.isFirstMessage) {
     messages.push({
-      role: "system",
-      content: `[CURRICULUM CONTEXT]\n${ragContext}`,
+      role: 'system',
+      content: `FIRST MESSAGE: This is the student's very first message. Do NOT ask "What subject do you need help with?" or "What is your name?" — they told you what they need in their message. Respond to what they actually said. Be natural. No formal welcome. Just respond like a person would if a friend texted them.`,
     });
   }
 
-  // 6. Memory update instructions (the AI decides what to remember after this turn)
-  messages.push({
-    role: "system",
-    content: `After your response, if you learned something important about this student, include a MEMORY_UPDATE block at the very end of your response in this exact format:
-MEMORY_UPDATE:block_name:operation:content
-Where block_name is one of: humanProfile, learningStyle, progress, shameMap, curiosityMap, procedural
-Where operation is one of: append, replace, delete
-Example: MEMORY_UPDATE:learningStyle:append:Student prefers market analogies for mathematics
+  // 3. Student memory
+  messages.push({ role: 'system', content: buildMemorySegment(profile.memoryBlocks) });
 
-Do not include the MEMORY_UPDATE block unless you genuinely learned something new. Do not invent updates. Only update if this turn revealed something real.`,
-  });
+  // 4. Streak and special context
+  const specialContext: string[] = [];
+  if (options.streakMessage) specialContext.push(options.streakMessage);
+  if (options.examCountdownMessage) specialContext.push(`EXAM ALERT: ${options.examCountdownMessage}`);
+  if (options.dueReviews) specialContext.push(`SPACED REVIEW DUE: ${options.dueReviews}`);
+  if (options.studyPlanContext) specialContext.push(`STUDY PLAN: ${options.studyPlanContext}`);
+  if (specialContext.length > 0) {
+    messages.push({ role: 'system', content: specialContext.join('\n') });
+  }
 
-  // 7. The student's message (always last)
-  messages.push({
-    role: "user",
-    content: rawMessage,
-  });
+  // 5. Working memory
+  messages.push({ role: 'system', content: buildWorkingMemorySegment(wm) });
+
+  // 6. Force vector
+  messages.push({ role: 'system', content: buildForceVectorSegment(fv) });
+
+  // 7. Vision context (if image was sent)
+  if (options.visionContext) {
+    const vc = options.visionContext as { problemDescription?: string; studentWork?: string; errorType?: string };
+    messages.push({
+      role: 'system',
+      content: `IMAGE ANALYSIS:\nProblem: ${vc.problemDescription || 'unknown'}\nStudent's work: ${vc.studentWork || 'none visible'}\nError detected: ${vc.errorType || 'none identified'}\nDo NOT solve the problem. Help the student understand where they went wrong and guide them to the answer.`,
+    });
+  }
+
+  // 8. RAG curriculum context
+  if (options.ragContext) {
+    messages.push({ role: 'system', content: `CURRICULUM CONTEXT:\n${options.ragContext}` });
+  }
+
+  // 9. Structured output instruction
+  messages.push({ role: 'system', content: STRUCTURED_OUTPUT_INSTRUCTION });
+
+  // 10. The student's message
+  messages.push({ role: 'user', content: rawMessage });
 
   return messages;
 }
 
-// Parse memory update instructions from the AI's response
-export function parseMemoryUpdates(
-  responseText: string
-): {
-  cleanResponse: string;
-  updates: { block: string; operation: string; content: string }[];
-} {
-  const lines = responseText.split("\n");
-  const updates: { block: string; operation: string; content: string }[] = [];
-  const cleanLines: string[] = [];
+interface ParsedWaxData {
+  topic?: string;
+  subject?: string;
+  misconception?: string;
+  masterySignal?: boolean;
+  masteryType?: string;
+  memoryUpdates?: import('../types/llm').MemoryUpdate[];
+  scheduleReview?: boolean;
+  usedAnalogy?: string;
+  examStrategyNote?: string;
+}
 
-  for (const line of lines) {
-    if (line.startsWith("MEMORY_UPDATE:")) {
-      const parts = line.slice("MEMORY_UPDATE:".length).split(":");
-      if (parts.length >= 3) {
-        updates.push({
-          block: parts[0].trim(),
-          operation: parts[1].trim(),
-          content: parts.slice(2).join(":").trim(),
-        });
-      }
-    } else {
-      cleanLines.push(line);
-    }
+export function parseWaxData(rawResponse: string): { cleanResponse: string; waxData: ParsedWaxData } {
+  const marker = 'WAXDATA:';
+  const idx = rawResponse.lastIndexOf(marker);
+
+  if (idx === -1) {
+    return { cleanResponse: rawResponse.trim(), waxData: {} };
   }
 
-  return {
-    cleanResponse: cleanLines.join("\n").trim(),
-    updates,
-  };
+  const cleanResponse = rawResponse.slice(0, idx).trim();
+  const jsonStr = rawResponse.slice(idx + marker.length).trim();
+
+  try {
+    const waxData = JSON.parse(jsonStr) as ParsedWaxData;
+    return { cleanResponse, waxData };
+  } catch {
+    return { cleanResponse, waxData: {} };
+  }
 }
