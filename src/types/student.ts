@@ -1,73 +1,191 @@
-// The student is not a row in a database with a "level" field.
-// The student is a complex human being whose profile emerges from conversation.
-// Nothing here is hardcoded. Everything here is discovered.
+export interface EmotionalSnapshot {
+  valence: number;
+  arousal: number;
+  dominance: number;
+  shamePotential: number;
+  curiosity: number;
+  selfEfficacy: number;
+  flowIndicator: number;
+  frustration: number;
+  tiredness: number;
+  excitement: number;
+}
+
+export interface PedagogicalIntent {
+  primaryIntent:
+    | 'seeking_clarification'
+    | 'applying_knowledge'
+    | 'exploring_curiosity'
+    | 'expressing_confusion'
+    | 'requesting_example'
+    | 'showing_understanding'
+    | 'expressing_frustration'
+    | 'casual_greeting'
+    | 'exam_prep'
+    | 'brain_dump'
+    | 'teach_back'
+    | 'requesting_summary'
+    | 'requesting_study_plan'
+    | 'reporting_exam_result'
+    | 'unknown';
+  hasMisconception: boolean;
+  misconceptionDescription?: string;
+  inferredKnowledgeLevel: number;
+  inferredTopic?: string;
+  inferredSubject?: string;
+  temporalPressure: 'none' | 'low' | 'medium' | 'high' | 'exam_tomorrow' | 'exam_today';
+  rawMessage: string;
+  emotionalSignals: EmotionalSnapshot;
+  messageLength: number;
+  containsQuestion: boolean;
+  languageStyle: 'formal' | 'casual' | 'pidgin' | 'mixed';
+  isRepeatedQuestion: boolean;
+  repetitionCount?: number;
+}
+
+export interface WorkingMemorySnapshot {
+  currentTopic: string | null;
+  currentSubject: string | null;
+  lastMisconception: string | null;
+  lastScaffoldUsed: string | null;
+  lastAnalogyUsed: string | null;
+  studentConfidence: number;
+  turnsInCurrentTopic: number;
+  salienceRankedTurns: SalientTurn[];
+  backgroundSummary: string;
+  unresolvedQuestion: string | null;
+  studentLeadingConversation: boolean;
+  stuckRepetitionCount: number;
+  approachesAttempted: string[];
+  conceptsVisitedThisSession: string[];
+  hintLevelCurrent: number;
+}
+
+export interface SalientTurn {
+  role: 'student' | 'tutor';
+  content: string;
+  salienceScore: number;
+  tags: string[];
+}
 
 export interface StudentProfile {
-  studentId: string;           // Their WhatsApp number
+  studentId: string;
   createdAt: Date;
   lastSeenAt: Date;
-
-  // These are INFERRED, not filled out by the student
-  inferredName?: string;
-  inferredLocation?: string;   // Lagos, Abuja, rural north, etc. — only if mentioned
-  inferredSchoolType?: string; // secondary, university, polytechnic — inferred
-  inferredExamTargets: string[]; // WAEC, JAMB, NECO, Post-UTME — inferred from messages
-
-  // Learning preferences — discovered through conversation, not surveys
-  learningStyle: {
-    prefersAnalogies: boolean;
-    analogyDomains: string[];  // market, sports, music, food — whatever resonates
-    prefersVisualDescriptions: boolean;
-    prefersMath: boolean;
-    prefersStoryForm: boolean;
-    toleratesAbstraction: number; // 0.0 (concrete only) to 1.0 (loves abstraction)
-  };
-
-  // Emotional profile — discovered, not tested
-  emotionalProfile: {
-    shameThreshold: number;     // How quickly they withdraw under pressure
-    curiosityLevel: number;     // Their baseline curiosity
-    frustrationTolerance: number;
-    prideIntelligence: boolean; // Do they care about seeming smart?
-    respondsToHumor: boolean;
-  };
-
-  // Topics they have explored — NOT a hardcoded syllabus
-  // Keys are concept identifiers discovered organically, not from a schema
+  totalSessions: number;
+  totalTurns: number;
+  studyStreak: number;
+  lastStudyDate: Date | null;
+  examTargets: ExamTarget[];
+  culturalContext: CulturalContext;
+  learningStyle: LearningStyle;
+  emotionalProfile: EmotionalProfile;
   conceptProgress: Record<string, ConceptProgress>;
+  errorDiary: ErrorEntry[];
+  analogyLibrary: AnalogyEntry[];
+  memoryBlocks: MemoryBlocks;
+  studyPlan?: StudyPlan;
+}
 
-  // Raw memory blocks — the AI's private notebook
-  memoryBlocks: {
-    humanProfile: string;    // What I know about this student as a person
-    learningStyle: string;   // How this student learns best
-    progress: string;        // What we've covered, what to do next
-    shameMap: string;        // What triggers shame for this student
-    curiosityMap: string;    // What lights this student up
-    procedural: string;      // How I should behave with this student specifically
-  };
+export interface ExamTarget {
+  examType: string;
+  examDate?: Date;
+  subjects: string[];
+  targetScore?: number;
+}
+
+export interface CulturalContext {
+  country: string;
+  region: string;
+  language: string;
+  currency: string;
+  examBoards: string[];
+  culturalReferences: string[];
+  timezone: string;
+}
+
+export interface LearningStyle {
+  prefersAnalogies: boolean;
+  analogyDomains: string[];
+  prefersVisualDescriptions: boolean;
+  prefersMath: boolean;
+  prefersStoryForm: boolean;
+  prefersVoice: boolean;
+  toleratesAbstraction: number;
+  preferredPace: 'slow' | 'normal' | 'fast';
+  prefersShortAnswers: boolean;
+  prefersSocratic: boolean;
+  respondsToHumor: boolean;
+  respondsToChallenge: boolean;
+}
+
+export interface EmotionalProfile {
+  shameThreshold: number;
+  curiosityLevel: number;
+  frustrationTolerance: number;
+  prideIntelligence: boolean;
+  respondsToHumor: boolean;
+  needsExplicitValidation: boolean;
+  avoidsAdmittingConfusion: boolean;
+  messagesAfterMidnight: boolean;
 }
 
 export interface ConceptProgress {
   conceptId: string;
   conceptName: string;
-  subject: string;         // Discovered, not hardcoded
+  subject: string;
   firstEncountered: Date;
   lastPracticed: Date;
-  masteryLevel: number;    // 0.0 to 1.0
+  masteryLevel: number;
   misconceptions: string[];
   analogiesUsed: string[];
-  nextReviewAt?: Date;     // Spaced repetition schedule
+  approachesSucceeded: string[];
+  approachesFailed: string[];
+  nextReviewAt?: Date;
+  reviewInterval: number;
+  reviewCount: number;
 }
 
-export interface Session {
-  sessionId: string;
-  studentId: string;
-  startedAt: Date;
-  lastActivityAt: Date;
-  turnCount: number;
-  conversationHistory: ConversationTurn[];
-  currentTopicTrail: string[];  // Topics discussed in order, not a hardcoded path
-  isActive: boolean;
+export interface ErrorEntry {
+  concept: string;
+  errorType: string;
+  count: number;
+  lastOccurred: Date;
+  resolved: boolean;
+}
+
+export interface AnalogyEntry {
+  concept: string;
+  analogy: string;
+  domain: string;
+  effectiveness: number;
+  usedAt: Date;
+}
+
+export interface MemoryBlocks {
+  humanProfile: string;
+  learningStyle: string;
+  progress: string;
+  shameMap: string;
+  curiosityMap: string;
+  procedural: string;
+  examStrategy: string;
+  errorPatterns: string;
+  breakthroughs: string;
+}
+
+export interface StudyPlan {
+  createdAt: Date;
+  examDate: Date;
+  subject: string;
+  weeklyTargets: WeeklyTarget[];
+  currentWeek: number;
+}
+
+export interface WeeklyTarget {
+  week: number;
+  concepts: string[];
+  isCompleted: boolean;
 }
 
 export interface ConversationTurn {
@@ -77,8 +195,9 @@ export interface ConversationTurn {
   turnNumber: number;
   studentMessage: string;
   tutorResponse: string;
-  emotionalSnapshot: import('./events').EmotionalSnapshot;
-  plannerForce: import('./events').PlannerForceEmitted['forceVector'] | null;
+  emotionalSnapshot: EmotionalSnapshot;
+  plannerForce: import('./events').ForceVector | null;
+  modality: string;
   modelUsed: string;
   latencyMs: number;
   tokensIn: number;
@@ -86,4 +205,18 @@ export interface ConversationTurn {
   costUsd: number;
   toolsUsed: string[];
   timestamp: Date;
+  topic?: string;
+  subject?: string;
+  masteryEvidenced?: boolean;
+}
+
+export interface Session {
+  sessionId: string;
+  studentId: string;
+  startedAt: Date;
+  lastActivityAt: Date;
+  turnCount: number;
+  conversationHistory: ConversationTurn[];
+  currentTopicTrail: string[];
+  isActive: boolean;
 }
