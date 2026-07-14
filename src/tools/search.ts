@@ -1,65 +1,78 @@
-// Web search tool — the AI can search the internet when it doesn't know something.
-// The tutor does not pretend to know things it doesn't.
-// It says "Give me a second, let me look that up" and actually does it.
-
-import axios from "axios";
+import axios from 'axios';
+import { logger } from '../middleware/logger';
 
 export interface SearchResult {
   title: string;
   url: string;
   snippet: string;
-  content?: string;
 }
 
-export async function searchWeb(
-  query: string,
-  reason: "curriculum_lookup" | "fact_check" | "analogy_find" | "syllabus_verify"
-): Promise<SearchResult[]> {
+export async function searchBrave(query: string): Promise<SearchResult[]> {
   const apiKey = process.env.BRAVE_SEARCH_API_KEY;
-
-  if (!apiKey) {
-    console.warn("[Search] No BRAVE_SEARCH_API_KEY — returning empty results");
-    return [];
-  }
+  if (!apiKey) return [];
 
   try {
-    const response = await axios.get("https://api.search.brave.com/res/v1/web/search", {
-      headers: {
-        Accept: "application/json",
-        "Accept-Encoding": "gzip",
-        "X-Subscription-Token": apiKey,
-      },
-      params: {
-        q: query,
-        count: 5,
-        safesearch: "moderate",
-        search_lang: "en",
-        country: "NG", // Bias toward Nigerian sources when relevant
-      },
+    const response = await axios.get('https://api.search.brave.com/res/v1/web/search', {
+      headers: { Accept: 'application/json', 'X-Subscription-Token': apiKey },
+      params: { q: query, count: 5, search_lang: 'en' },
+      timeout: 8_000,
     });
 
-    const results: SearchResult[] = (response.data.web?.results ?? []).map(
-      (r: { title: string; url: string; description: string }) => ({
-        title: r.title,
-        url: r.url,
-        snippet: r.description,
-      })
-    );
-
-    return results;
-  } catch (error) {
-    console.error("[Search] Brave search failed:", error);
+    return (response.data.web?.results ?? []).map((r: { title: string; url: string; description: string }) => ({
+      title: r.title, url: r.url, snippet: r.description,
+    }));
+  } catch (err) {
+    logger.warn('[Search] Brave failed:', (err as Error).message);
     return [];
   }
 }
 
-export async function formatSearchResultsForLLM(results: SearchResult[]): Promise<string> {
-  if (results.length === 0) {
-    return "No search results found.";
+export async function searchTavily(query: string): Promise<SearchResult[]> {
+  const apiKey = process.env.TAVILY_API_KEY;
+  if (!apiKey) return [];
+
+  try {
+    const response = await axios.post('https://api.tavily.com/search', {
+      api_key: apiKey,
+      query,
+      search_depth: 'basic',
+      max_results: 5,
+    }, { timeout: 10_000 });
+
+    return (response.data.results ?? []).map((r: { title: string; url: string; content: string }) => ({
+      title: r.title, url: r.url, snippet: r.content?.slice(0, 300) || '',
+    }));
+  } catch (err) {
+    logger.warn('[Search] Tavily failed:', (err as Error).message);
+    return [];
   }
+}
+
+export async function searchForCurriculum(query: string, examBoard: string): Promise<string> {
+  const fullQuery = `${examBoard} ${query} syllabus curriculum 2024 2025`;
+
+  const [brave, tavily] = await Promise.allSettled([
+    searchBrave(fullQuery),
+    searchTavily(fullQuery),
+  ]);
+
+  const results = [
+    ...(brave.status === 'fulfilled' ? brave.value : []),
+    ...(tavily.status === 'fulfilled' ? tavily.value : []),
+  ].slice(0, 5);
+
+  if (results.length === 0) return '';
 
   return results
-    .slice(0, 3)
-    .map((r, i) => `[Result ${i + 1}]\nTitle: ${r.title}\nSnippet: ${r.snippet}`)
-    .join("\n\n");
+    .map((r, i) => `[${i + 1}] ${r.title}: ${r.snippet}`)
+    .join('\n\n');
+}
+
+export async function findPastExamQuestions(topic: string, examBoard: string): Promise<string> {
+  const query = `${examBoard} past questions ${topic} Nigeria exam`;
+  const results = await searchBrave(query);
+
+  if (results.length === 0) return '';
+
+  return `Related exam questions found:\n${results.slice(0, 3).map(r => `- ${r.title}: ${r.snippet}`).join('\n')}`;
 }
