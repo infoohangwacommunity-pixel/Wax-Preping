@@ -1,17 +1,8 @@
 export interface LLMMessage {
-  role: "system" | "user" | "assistant" | "tool";
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
   name?: string;
   tool_call_id?: string;
-}
-
-export interface LLMTool {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
 }
 
 export interface LLMResponse {
@@ -30,35 +21,24 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
-export interface ModelConfig {
-  provider: "groq" | "openrouter" | "openai" | "anthropic";
-  model: string;
-  maxTokens: number;
-  temperature: number;
-  costPer1kInputTokens: number;
-  costPer1kOutputTokens: number;
-  supportsTools: boolean;
-  supportsStructuredOutput: boolean;
-}
-
-// The structured shape we always ask the LLM to return.
-// Using zod for runtime validation.
 export interface StructuredTutorResponse {
   responseText: string;
-  emotionalTone: "warm" | "encouraging" | "neutral" | "concerned" | "playful";
+  emotionalTone: 'warm' | 'encouraging' | 'neutral' | 'concerned' | 'playful' | 'celebratory';
   confidence: number;
-  detectedStudentState: {
-    topic: string | null;
-    misconception: string | null;
-    understanding: number;
-    emotionalState: string;
-  };
-  memoryUpdates?: {
-    block: "humanProfile" | "learningStyle" | "progress" | "shameMap" | "curiosityMap" | "procedural";
-    operation: "append" | "replace" | "delete";
-    content: string;
-  }[];
-  suggestedNextAction: string;
-  usedTool: boolean;
-  toolName?: string;
+  detectedTopic: string | null;
+  detectedSubject: string | null;
+  misconceptionAddressed: string | null;
+  masterySignalDetected: boolean;
+  masteryEvidenceType: string | null;
+  memoryUpdates: MemoryUpdate[];
+  conceptsToReview: string[];
+  suggestedNextConcept: string | null;
+  usedTools: string[];
+  examStrategyNote: string | null;
+}
+
+export interface MemoryUpdate {
+  block: 'humanProfile' | 'learningStyle' | 'progress' | 'shameMap' | 'curiosityMap' | 'procedural' | 'examStrategy' | 'errorPatterns' | 'breakthroughs';
+  operation: 'append' | 'replace' | 'delete';
+  content: string;
 }
