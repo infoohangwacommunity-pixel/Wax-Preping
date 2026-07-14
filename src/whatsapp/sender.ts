@@ -1,124 +1,86 @@
-// WhatsApp sender — the outbound side.
-// Sends responses back to the student via WhatsApp Cloud API.
-// Handles the typing indicator and message chunking for long responses.
+import axios from 'axios';
+import { logger } from '../middleware/logger';
 
-import axios from "axios";
+const WA_BASE = 'https://graph.facebook.com/v20.0';
 
-const WA_API_BASE = "https://graph.facebook.com/v20.0";
-
-function getHeaders() {
+function headers() {
   return {
     Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-    "Content-Type": "application/json",
+    'Content-Type': 'application/json',
   };
 }
 
-// Show "typing..." indicator before the response
-export async function sendTypingIndicator(phoneNumberId: string, toNumber: string): Promise<void> {
-  try {
-    await axios.post(
-      `${WA_API_BASE}/${phoneNumberId}/messages`,
-      {
-        messaging_product: "whatsapp",
-        to: toNumber,
-        type: "reaction",
-        reaction: {
-          message_id: "fake_id", // WhatsApp doesn't have a real typing API — this is a workaround
-          emoji: "💭",
-        },
-      },
-      { headers: getHeaders() }
-    );
-  } catch {
-    // Typing indicator is not critical — fail silently
-  }
-}
+export async function sendTextMessage(phoneNumberId: string, to: string, text: string): Promise<string> {
+  const chunks = chunkText(text, 4000);
+  let lastId = '';
 
-// Send a text message to a WhatsApp number
-export async function sendTextMessage(
-  phoneNumberId: string,
-  toNumber: string,
-  text: string
-): Promise<{ messageId: string }> {
-  // WhatsApp has a 4096 character limit per message
-  // If the response is longer, split it into chunks
-  const chunks = chunkMessage(text, 4000);
-
-  let lastMessageId = "";
-
-  for (const chunk of chunks) {
+  for (let i = 0; i < chunks.length; i++) {
     const response = await axios.post(
-      `${WA_API_BASE}/${phoneNumberId}/messages`,
-      {
-        messaging_product: "whatsapp",
-        recipient_type: "individual",
-        to: toNumber,
-        type: "text",
-        text: {
-          body: chunk,
-          preview_url: false,
-        },
-      },
-      { headers: getHeaders() }
+      `${WA_BASE}/${phoneNumberId}/messages`,
+      { messaging_product: 'whatsapp', recipient_type: 'individual', to, type: 'text', text: { body: chunks[i], preview_url: false } },
+      { headers: headers() }
     );
+    lastId = response.data?.messages?.[0]?.id ?? '';
 
-    lastMessageId = response.data?.messages?.[0]?.id ?? "";
-
-    // Brief pause between chunks to maintain reading flow
-    if (chunks.length > 1) {
-      await new Promise((r) => setTimeout(r, 1000));
+    if (chunks.length > 1 && i < chunks.length - 1) {
+      await new Promise(r => setTimeout(r, 1200));
     }
   }
 
-  return { messageId: lastMessageId };
+  return lastId;
 }
 
-// Mark a message as read (shows blue ticks to the student)
-export async function markAsRead(
-  phoneNumberId: string,
-  messageId: string
-): Promise<void> {
+export async function sendVoiceMessage(phoneNumberId: string, to: string, audioBuffer: Buffer): Promise<void> {
   try {
-    await axios.post(
-      `${WA_API_BASE}/${phoneNumberId}/messages`,
-      {
-        messaging_product: "whatsapp",
-        status: "read",
-        message_id: messageId,
-      },
-      { headers: getHeaders() }
+    // Upload media first
+    const FormData = (await import('form-data')).default;
+    const form = new FormData();
+    form.append('file', audioBuffer, { filename: 'response.mp3', contentType: 'audio/mpeg' });
+    form.append('messaging_product', 'whatsapp');
+
+    const uploadResponse = await axios.post(
+      `${WA_BASE}/${phoneNumberId}/media`,
+      form,
+      { headers: { ...form.getHeaders(), Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}` } }
     );
-  } catch {
-    // Not critical — fail silently
+
+    const mediaId = uploadResponse.data.id;
+
+    await axios.post(
+      `${WA_BASE}/${phoneNumberId}/messages`,
+      { messaging_product: 'whatsapp', to, type: 'audio', audio: { id: mediaId } },
+      { headers: headers() }
+    );
+  } catch (err) {
+    logger.warn('[Sender] Voice message send failed:', err);
   }
 }
 
-// Split long text into chunks that respect sentence boundaries
-function chunkMessage(text: string, maxLength: number): string[] {
-  if (text.length <= maxLength) return [text];
+export async function markAsRead(phoneNumberId: string, messageId: string): Promise<void> {
+  try {
+    await axios.post(
+      `${WA_BASE}/${phoneNumberId}/messages`,
+      { messaging_product: 'whatsapp', status: 'read', message_id: messageId },
+      { headers: headers() }
+    );
+  } catch { /* not critical */ }
+}
 
+function chunkText(text: string, maxLen: number): string[] {
+  if (text.length <= maxLen) return [text];
   const chunks: string[] = [];
   let remaining = text;
 
-  while (remaining.length > maxLength) {
-    // Try to split at a sentence boundary
-    let splitPoint = maxLength;
-    const lastPeriod = remaining.lastIndexOf(". ", maxLength);
-    const lastNewline = remaining.lastIndexOf("\n", maxLength);
-
-    if (lastPeriod > maxLength * 0.6) {
-      splitPoint = lastPeriod + 2;
-    } else if (lastNewline > maxLength * 0.6) {
-      splitPoint = lastNewline + 1;
-    }
-
-    chunks.push(remaining.slice(0, splitPoint).trim());
-    remaining = remaining.slice(splitPoint).trim();
+  while (remaining.length > maxLen) {
+    let split = maxLen;
+    const period = remaining.lastIndexOf('. ', maxLen);
+    const newline = remaining.lastIndexOf('\n', maxLen);
+    if (period > maxLen * 0.6) split = period + 2;
+    else if (newline > maxLen * 0.6) split = newline + 1;
+    chunks.push(remaining.slice(0, split).trim());
+    remaining = remaining.slice(split).trim();
   }
 
-  if (remaining.length > 0) {
-    chunks.push(remaining);
-  }
-
+  if (remaining.length > 0) chunks.push(remaining);
   return chunks;
 }
