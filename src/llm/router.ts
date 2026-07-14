@@ -1,70 +1,83 @@
-// The LLM router decides which model to use for each request.
-// It starts with the cheapest option (Groq free) and escalates only if needed.
-// The routing logic is based on task complexity, not hardcoded rules.
+import { callGroq, isGroqAvailable } from './groq';
+import { callOpenRouter, isOpenRouterAvailable } from './openrouter';
+import { callZAI, isZAIAvailable } from './zai';
+import type { LLMMessage, LLMResponse } from '../types/llm';
+import { logger } from '../middleware/logger';
+import { db } from '../db/client';
 
-import { callGroq } from "./groq";
-import type { LLMMessage, LLMResponse } from "../types/llm";
-
-// Estimate task complexity from the assembled prompt
 function estimateComplexity(messages: LLMMessage[]): number {
-  const systemContent = messages
-    .filter((m) => m.role === "system")
-    .map((m) => m.content)
-    .join(" ");
-
-  const userContent = messages
-    .filter((m) => m.role === "user")
-    .map((m) => m.content)
-    .join(" ");
-
-  const combined = systemContent + userContent;
-  let complexity = 0.3; // Baseline
-
-  // More context = potentially harder task
+  const combined = messages.map(m => m.content).join(' ');
+  let complexity = 0.3;
   const tokenEstimate = combined.length / 4;
   if (tokenEstimate > 3000) complexity += 0.2;
   if (tokenEstimate > 6000) complexity += 0.15;
-
-  // Math or science keywords
-  if (/theorem|derivative|integral|quantum|electromagnetic|biochemistry/.test(combined.toLowerCase())) {
-    complexity += 0.15;
+  if (/theorem|derivative|integral|electromagnetic|quantum|calculus|biochemistry|organic chemistry/.test(combined.toLowerCase())) {
+    complexity += 0.2;
   }
-
-  // Student is frustrated or in a critical moment
-  if (/shame|frustrated|i give up|i can't do|HIGH — be especially|CRITICAL/.test(combined)) {
+  if (/CRITICAL|HIGH — be especially|shame_potential.*0\.[7-9]/.test(combined)) {
     complexity += 0.1;
   }
-
   return Math.min(1.0, complexity);
 }
 
 export async function routeAndCall(
   messages: LLMMessage[],
-  requiresTools = false
+  options: { jsonMode?: boolean; maxTokens?: number; requiresReasoning?: boolean } = {}
 ): Promise<LLMResponse> {
   const complexity = estimateComplexity(messages);
+  const maxTokens = options.maxTokens || (complexity > 0.7 ? 1500 : 1024);
+  const jsonMode = options.jsonMode || false;
 
-  // Stage 1 only uses Groq (free tier, llama-3.3-70b-versatile)
-  // Later stages will add OpenRouter, DeepSeek, etc.
-  // The interface stays the same — only this function changes.
+  const providers = [
+    {
+      name: 'groq',
+      available: isGroqAvailable,
+      call: () => callGroq(messages, 'llama-3.3-70b-versatile', maxTokens, 0.7, jsonMode),
+    },
+    {
+      name: 'openrouter',
+      available: isOpenRouterAvailable,
+      call: () => callOpenRouter(messages, 'meta-llama/llama-3.1-8b-instruct:free', maxTokens),
+    },
+    {
+      name: 'zai',
+      available: isZAIAvailable,
+      call: () => callZAI(messages, 'glm-4.7-flash', maxTokens),
+    },
+  ];
 
-  try {
-    const model = complexity > 0.7
-      ? "llama-3.3-70b-versatile"    // More capable for complex explanations
-      : "llama-3.3-70b-versatile";   // Same for now — add mixtral or others later
-
-    return await callGroq(messages, model, 1024, 0.7);
-  } catch (error: unknown) {
-    const err = error as { status?: number; error?: { type?: string } };
-    console.error("[Router] Groq call failed:", err);
-
-    // If rate limited, wait briefly and retry once
-    if (err?.status === 429 || err?.error?.type === "rate_limit_exceeded") {
-      console.log("[Router] Rate limited — waiting 5 seconds and retrying");
-      await new Promise((r) => setTimeout(r, 5000));
-      return await callGroq(messages, "llama-3.3-70b-versatile", 1024, 0.7);
+  for (const provider of providers) {
+    if (!provider.available()) {
+      logger.warn(`[Router] ${provider.name} circuit open — skipping`);
+      continue;
     }
 
-    throw error;
+    try {
+      const result = await provider.call();
+
+      // Track cost
+      await trackCost(provider.name, result.tokensIn, result.tokensOut, result.costUsd).catch(() => {});
+
+      return result;
+    } catch (err: unknown) {
+      const e = err as { status?: number };
+      logger.warn(`[Router] ${provider.name} failed (status: ${e?.status}) — trying next`);
+
+      if (e?.status === 429) {
+        await new Promise(r => setTimeout(r, 3000));
+      }
+
+      continue;
+    }
   }
+
+  throw new Error('All LLM providers exhausted');
+}
+
+async function trackCost(model: string, tokensIn: number, tokensOut: number, costUsd: number): Promise<void> {
+  await db.query(
+    `INSERT INTO cost_tracking (student_id, model, tokens_in, tokens_out, cost_usd)
+     VALUES ('system', $1, $2, $3, $4)`,
+    [model, tokensIn, tokensOut, costUsd]
+  );
 }
