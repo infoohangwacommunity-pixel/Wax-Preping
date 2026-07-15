@@ -23,7 +23,7 @@ export async function initializeDatabase(): Promise<void> {
     )
   `);
 
-  await db.query(`CREATE INDEX IF NOT EXISTS sessions_student_id_idx ON sessions(student_id)`);
+  await db.query(`CREATE INDEX IF NOT EXISTS sessions_student_idx ON sessions(student_id)`);
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS conversation_turns (
@@ -33,8 +33,7 @@ export async function initializeDatabase(): Promise<void> {
       turn_number INT NOT NULL,
       student_message TEXT,
       tutor_response TEXT,
-      emotional_snapshot JSONB,
-      planner_force JSONB,
+      ai_analysis JSONB,
       modality TEXT DEFAULT 'text',
       model_used TEXT,
       latency_ms INT,
@@ -46,13 +45,13 @@ export async function initializeDatabase(): Promise<void> {
       topic TEXT,
       subject TEXT,
       mastery_evidenced BOOLEAN DEFAULT FALSE,
+      reflection_score FLOAT,
       timestamp TIMESTAMPTZ DEFAULT NOW()
     )
   `);
 
-  await db.query(`CREATE INDEX IF NOT EXISTS turns_student_id_idx ON conversation_turns(student_id)`);
-  await db.query(`CREATE INDEX IF NOT EXISTS turns_session_id_idx ON conversation_turns(session_id)`);
-  await db.query(`CREATE INDEX IF NOT EXISTS turns_topic_idx ON conversation_turns(topic)`);
+  await db.query(`CREATE INDEX IF NOT EXISTS turns_student_idx ON conversation_turns(student_id)`);
+  await db.query(`CREATE INDEX IF NOT EXISTS turns_session_idx ON conversation_turns(session_id)`);
 
   try {
     await db.query(`
@@ -60,7 +59,7 @@ export async function initializeDatabase(): Promise<void> {
       ON conversation_turns USING ivfflat (embedding vector_cosine_ops)
       WITH (lists = 100)
     `);
-  } catch { /* Needs enough rows first */ }
+  } catch { /* Needs rows first */ }
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS student_profiles (
@@ -71,7 +70,6 @@ export async function initializeDatabase(): Promise<void> {
       total_turns INT DEFAULT 0,
       study_streak INT DEFAULT 0,
       last_study_date DATE,
-      profile JSONB DEFAULT '{}',
       memory_blocks JSONB DEFAULT '{}',
       concept_progress JSONB DEFAULT '{}',
       error_diary JSONB DEFAULT '[]',
@@ -79,23 +77,96 @@ export async function initializeDatabase(): Promise<void> {
       exam_targets JSONB DEFAULT '[]',
       cultural_context JSONB DEFAULT '{}',
       study_plan JSONB,
-      learning_embedding VECTOR(384)
+      symbolic_knowledge JSONB DEFAULT '{}',
+      ai_reflections JSONB DEFAULT '[]'
+    )
+  `);
+
+  // Prompt component system tables
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS prompt_components (
+      component_id TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      weight FLOAT DEFAULT 1.0,
+      priority INT DEFAULT 50,
+      conditions JSONB DEFAULT '[]',
+      version INT DEFAULT 1,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
 
   await db.query(`
-    CREATE TABLE IF NOT EXISTS past_questions (
+    CREATE TABLE IF NOT EXISTS prompt_performance (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-      exam_board TEXT NOT NULL,
-      subject TEXT NOT NULL,
-      topic TEXT NOT NULL,
-      year INT,
-      difficulty FLOAT DEFAULT 0.5,
-      question_text TEXT NOT NULL,
-      answer TEXT,
-      explanation TEXT,
-      embedding VECTOR(384),
-      created_at TIMESTAMPTZ DEFAULT NOW()
+      component_id TEXT NOT NULL,
+      student_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      turn_number INT NOT NULL,
+      student_engagement FLOAT DEFAULT 0,
+      mastery_signal BOOLEAN DEFAULT FALSE,
+      shame_spike BOOLEAN DEFAULT FALSE,
+      frustration_spike BOOLEAN DEFAULT FALSE,
+      flow_maintained BOOLEAN DEFAULT FALSE,
+      answer_leak BOOLEAN DEFAULT FALSE,
+      student_satisfaction FLOAT DEFAULT 0,
+      timestamp TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS prompt_experiments (
+      experiment_id TEXT PRIMARY KEY,
+      component_id TEXT NOT NULL,
+      variant_a TEXT NOT NULL,
+      variant_b TEXT NOT NULL,
+      start_date TIMESTAMPTZ DEFAULT NOW(),
+      end_date TIMESTAMPTZ,
+      student_split FLOAT DEFAULT 0.5,
+      status TEXT DEFAULT 'running'
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS prompt_experiment_results (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      experiment_id TEXT NOT NULL,
+      student_id TEXT NOT NULL,
+      variant TEXT NOT NULL,
+      mastery_signals INT DEFAULT 0,
+      engagement_score FLOAT DEFAULT 0,
+      shame_events INT DEFAULT 0,
+      frustration_events INT DEFAULT 0,
+      timestamp TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS prompt_evolution_log (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      component_id TEXT NOT NULL,
+      old_content TEXT,
+      new_content TEXT,
+      old_fitness FLOAT,
+      new_fitness FLOAT,
+      reason TEXT,
+      timestamp TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS ai_reflections (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      student_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      turn_number INT NOT NULL,
+      student_message TEXT,
+      tutor_response TEXT,
+      critique TEXT,
+      improvement TEXT,
+      confidence_score FLOAT,
+      would_do_differently TEXT,
+      timestamp TIMESTAMPTZ DEFAULT NOW()
     )
   `);
 
@@ -136,20 +207,19 @@ export async function initializeDatabase(): Promise<void> {
   `);
 
   await db.query(`
-    CREATE TABLE IF NOT EXISTS knowledge_graph (
+    CREATE TABLE IF NOT EXISTS defense_log (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
       student_id TEXT NOT NULL,
-      entity TEXT NOT NULL,
-      relation TEXT NOT NULL,
-      target TEXT NOT NULL,
-      confidence FLOAT DEFAULT 1.0,
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-      UNIQUE(student_id, entity, relation, target)
+      session_id TEXT NOT NULL,
+      layer TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      issue TEXT,
+      original_response TEXT,
+      revised_response TEXT,
+      was_fixed BOOLEAN DEFAULT FALSE,
+      timestamp TIMESTAMPTZ DEFAULT NOW()
     )
   `);
 
-  await db.query(`CREATE INDEX IF NOT EXISTS kg_student_idx ON knowledge_graph(student_id)`);
-  await db.query(`CREATE INDEX IF NOT EXISTS kg_entity_idx ON knowledge_graph(entity)`);
-
-  logger.info('[DB] All tables initialized');
+  logger.info('[DB] All tables initialized — WaxPrep v1.0.0');
 }
