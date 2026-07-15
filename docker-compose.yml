@@ -1,0 +1,93 @@
+version: '3.9'
+
+services:
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://waxprep:waxprep@postgres:5432/waxprep
+      - REDIS_URL=redis://redis:6379
+      - LLAMA_BRAIN_URL=http://llama-brain:8080
+      - LLAMA_ROUTER_URL=http://llama-router:8081
+    depends_on:
+      - postgres
+      - redis
+      - llama-brain
+      - llama-router
+    volumes:
+      - .:/app
+    command: node dist/index.js
+
+  brain:
+    build: .
+    environment:
+      - DATABASE_URL=postgresql://waxprep:waxprep@postgres:5432/waxprep
+      - REDIS_URL=redis://redis:6379
+      - LLAMA_BRAIN_URL=http://llama-brain:8080
+    depends_on:
+      - postgres
+      - redis
+      - llama-brain
+    command: node dist/brain/brain_agent.js
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: waxprep
+      POSTGRES_USER: waxprep
+      POSTGRES_PASSWORD: waxprep
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  llama-brain:
+    image: ghcr.io/ggerganov/llama.cpp:server
+    volumes:
+      - ./models:/models
+    command: >
+      -m /models/phi-4-mini.Q4_K_M.gguf
+      --host 0.0.0.0
+      --port 8080
+      --ctx-size 4096
+      --threads 4
+      --n-predict 1024
+      --temp 0.3
+    ports:
+      - "8080:8080"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  llama-router:
+    image: ghcr.io/ggerganov/llama.cpp:server
+    volumes:
+      - ./models:/models
+    command: >
+      -m /models/llama-3.2-1b.Q4_K_M.gguf
+      --host 0.0.0.0
+      --port 8081
+      --ctx-size 2048
+      --threads 2
+      --n-predict 256
+      --temp 0.1
+    ports:
+      - "8081:8081"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+volumes:
+  postgres_data:
+  redis_data:
