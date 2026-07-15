@@ -11,50 +11,44 @@ export interface EmotionalSnapshot {
   excitement: number;
 }
 
-export interface PedagogicalIntent {
-  primaryIntent:
-    | 'seeking_clarification'
-    | 'applying_knowledge'
-    | 'exploring_curiosity'
-    | 'expressing_confusion'
-    | 'requesting_example'
-    | 'showing_understanding'
-    | 'expressing_frustration'
-    | 'casual_greeting'
-    | 'exam_prep'
-    | 'brain_dump'
-    | 'teach_back'
-    | 'requesting_summary'
-    | 'requesting_study_plan'
-    | 'reporting_exam_result'
-    | 'unknown';
+// The AI generates this — not a code function
+export interface AIAnalysis {
+  emotionalReading: EmotionalSnapshot;
+  primaryIntent: string;
   hasMisconception: boolean;
-  misconceptionDescription?: string;
+  misconceptionDescription: string;
+  inferredTopic: string;
+  inferredSubject: string;
   inferredKnowledgeLevel: number;
-  inferredTopic?: string;
-  inferredSubject?: string;
-  temporalPressure: 'none' | 'low' | 'medium' | 'high' | 'exam_tomorrow' | 'exam_today';
-  rawMessage: string;
-  emotionalSignals: EmotionalSnapshot;
-  messageLength: number;
-  containsQuestion: boolean;
-  languageStyle: 'formal' | 'casual' | 'pidgin' | 'mixed';
-  isRepeatedQuestion: boolean;
-  repetitionCount?: number;
+  temporalPressure: string;
+  languageStyle: string;
+  pedagogicalStrategy: string;
+  warmthLevel: number;
+  scaffoldingLevel: number;
+  pacing: number;
+  useAnalogy: boolean;
+  socratic: boolean;
+  checkIn: boolean;
+  hintLevel: number;
+  shouldSearch: boolean;
+  searchQuery: string;
+  masterySignalDetected: boolean;
+  masteryEvidenceType: string;
+  cognitiveLoad: string;
+  sessionPhase: string;
+  stuckDetected: boolean;
 }
 
 export interface WorkingMemorySnapshot {
   currentTopic: string | null;
   currentSubject: string | null;
   lastMisconception: string | null;
-  lastScaffoldUsed: string | null;
   lastAnalogyUsed: string | null;
   studentConfidence: number;
   turnsInCurrentTopic: number;
   salienceRankedTurns: SalientTurn[];
   backgroundSummary: string;
   unresolvedQuestion: string | null;
-  studentLeadingConversation: boolean;
   stuckRepetitionCount: number;
   approachesAttempted: string[];
   conceptsVisitedThisSession: string[];
@@ -65,7 +59,6 @@ export interface SalientTurn {
   role: 'student' | 'tutor';
   content: string;
   salienceScore: number;
-  tags: string[];
 }
 
 export interface StudentProfile {
@@ -78,8 +71,6 @@ export interface StudentProfile {
   lastStudyDate: Date | null;
   examTargets: ExamTarget[];
   culturalContext: CulturalContext;
-  learningStyle: LearningStyle;
-  emotionalProfile: EmotionalProfile;
   conceptProgress: Record<string, ConceptProgress>;
   errorDiary: ErrorEntry[];
   analogyLibrary: AnalogyEntry[];
@@ -100,34 +91,7 @@ export interface CulturalContext {
   language: string;
   currency: string;
   examBoards: string[];
-  culturalReferences: string[];
   timezone: string;
-}
-
-export interface LearningStyle {
-  prefersAnalogies: boolean;
-  analogyDomains: string[];
-  prefersVisualDescriptions: boolean;
-  prefersMath: boolean;
-  prefersStoryForm: boolean;
-  prefersVoice: boolean;
-  toleratesAbstraction: number;
-  preferredPace: 'slow' | 'normal' | 'fast';
-  prefersShortAnswers: boolean;
-  prefersSocratic: boolean;
-  respondsToHumor: boolean;
-  respondsToChallenge: boolean;
-}
-
-export interface EmotionalProfile {
-  shameThreshold: number;
-  curiosityLevel: number;
-  frustrationTolerance: number;
-  prideIntelligence: boolean;
-  respondsToHumor: boolean;
-  needsExplicitValidation: boolean;
-  avoidsAdmittingConfusion: boolean;
-  messagesAfterMidnight: boolean;
 }
 
 export interface ConceptProgress {
@@ -137,13 +101,21 @@ export interface ConceptProgress {
   firstEncountered: Date;
   lastPracticed: Date;
   masteryLevel: number;
+  symbolicBeliefs: SymbolicBelief[];
   misconceptions: string[];
   analogiesUsed: string[];
-  approachesSucceeded: string[];
-  approachesFailed: string[];
   nextReviewAt?: Date;
   reviewInterval: number;
   reviewCount: number;
+}
+
+// Neural-symbolic knowledge representation
+export interface SymbolicBelief {
+  claim: string;
+  status: 'UNDERSTANDS' | 'CONFUSES' | 'HAS_NOT_SEEN' | 'MASTERS';
+  confidence: 'high' | 'medium' | 'low';
+  evidence: string;
+  updatedAt: Date;
 }
 
 export interface ErrorEntry {
@@ -195,19 +167,19 @@ export interface ConversationTurn {
   turnNumber: number;
   studentMessage: string;
   tutorResponse: string;
-  emotionalSnapshot: EmotionalSnapshot;
-  plannerForce: import('./events').ForceVector | null;
   modality: string;
+  aiAnalysis: Partial<AIAnalysis>;
   modelUsed: string;
   latencyMs: number;
   tokensIn: number;
   tokensOut: number;
   costUsd: number;
   toolsUsed: string[];
-  timestamp: Date;
   topic?: string;
   subject?: string;
   masteryEvidenced?: boolean;
+  reflectionScore?: number;
+  timestamp: Date;
 }
 
 export interface Session {
@@ -216,7 +188,5 @@ export interface Session {
   startedAt: Date;
   lastActivityAt: Date;
   turnCount: number;
-  conversationHistory: ConversationTurn[];
-  currentTopicTrail: string[];
   isActive: boolean;
 }
