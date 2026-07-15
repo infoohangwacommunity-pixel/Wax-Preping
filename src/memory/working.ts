@@ -1,153 +1,102 @@
-import type { ConversationTurn } from '../types/student';
-import type { WorkingMemorySnapshot, SalientTurn } from '../types/student';
+// Simplified working memory.
+// The AI now does the heavy lifting of analysis.
+// Working memory just provides the raw material — recent history organized by salience.
+// No hardcoded scoring formulas. Just honest data packaging.
 
-function salienceScore(turn: ConversationTurn): number {
+import type { ConversationTurn, WorkingMemorySnapshot, SalientTurn } from '../types/student';
+
+function roughSalienceScore(turn: ConversationTurn): number {
   let score = 0;
   const combined = `${turn.studentMessage} ${turn.tutorResponse}`.toLowerCase();
 
-  // Confusion signals
-  if (/don't get|confused|doesn't make sense|what does|how does|lost|stuck|i don't understand/.test(combined)) score += 3.0;
+  // Confusion and breakthrough moments are always salient
+  if (/don't get|confused|stuck|don't understand|not following/.test(combined)) score += 3;
+  if (/oh i see|got it|makes sense|clicked|oh so that's/.test(combined)) score += 3;
+  if (/misconception|actually|not quite|interesting twist|common mistake/.test(turn.tutorResponse.toLowerCase())) score += 2.5;
+  if (turn.masteryEvidenced) score += 3;
+  if (turn.studentMessage.includes('?') && turn.studentMessage.length > 25) score += 1;
 
-  // Misconception addressed
-  if (/actually|not quite|small correction|twist here|common mistake|many people think|let me clarify/.test(combined)) score += 2.5;
-
-  // Emotional peak
-  if (turn.emotionalSnapshot?.shamePotential > 0.6) score += 2.0;
-  if (turn.emotionalSnapshot?.curiosity > 0.7) score += 1.5;
-
-  // Breakthrough moment
-  if (/oh i see|got it|makes sense|that explains|now i get|clicked|oh wow|so basically|so that means/.test(combined)) score += 3.0;
-
-  // Analogy introduced
-  if (/like|imagine|think of|similar to|just like|same as|remember when/.test(turn.tutorResponse.toLowerCase())) score += 1.5;
-
-  // Question follow-up
-  if (turn.studentMessage.includes('?') && turn.studentMessage.length > 25) score += 1.2;
-
-  // Recency bonus
+  // Recency
   const ageMs = Date.now() - new Date(turn.timestamp).getTime();
-  score += Math.max(0, 2.0 - ageMs / (5 * 60 * 1000));
+  score += Math.max(0, 2 - ageMs / (5 * 60 * 1000));
 
   return score;
-}
-
-function detectStuckLoop(history: ConversationTurn[]): { count: number; approaches: string[] } {
-  if (history.length < 3) return { count: 0, approaches: [] };
-
-  const recent = history.slice(-6);
-  const studentMessages = recent.map(t => t.studentMessage.toLowerCase());
-
-  const confusionCount = studentMessages.filter(m =>
-    /don't get|still confused|same question|don't understand|not making sense/.test(m)
-  ).length;
-
-  const approaches: string[] = [];
-  recent.forEach(t => {
-    if (/like|imagine|think of/.test(t.tutorResponse.toLowerCase())) approaches.push('analogy');
-    if (/step by step|first|then|next/.test(t.tutorResponse.toLowerCase())) approaches.push('step_by_step');
-    if (/example|for instance|such as/.test(t.tutorResponse.toLowerCase())) approaches.push('example');
-    if (/why|what do you think|can you guess/.test(t.tutorResponse.toLowerCase())) approaches.push('socratic');
-  });
-
-  return { count: confusionCount, approaches: [...new Set(approaches)] };
-}
-
-function findCurrentTopic(history: ConversationTurn[]): { topic: string | null; subject: string | null } {
-  if (history.length === 0) return { topic: null, subject: null };
-
-  // Look at recent turns for topic/subject
-  for (let i = history.length - 1; i >= Math.max(0, history.length - 5); i--) {
-    if (history[i].topic) return { topic: history[i].topic!, subject: history[i].subject || null };
-  }
-
-  return { topic: null, subject: null };
 }
 
 export function buildWorkingMemory(history: ConversationTurn[]): WorkingMemorySnapshot {
   if (history.length === 0) {
     return {
       currentTopic: null, currentSubject: null, lastMisconception: null,
-      lastScaffoldUsed: null, lastAnalogyUsed: null, studentConfidence: 0.5,
-      turnsInCurrentTopic: 0, salienceRankedTurns: [], backgroundSummary: 'Beginning of conversation.',
-      unresolvedQuestion: null, studentLeadingConversation: false,
-      stuckRepetitionCount: 0, approachesAttempted: [], conceptsVisitedThisSession: [],
-      hintLevelCurrent: 0,
+      lastAnalogyUsed: null, studentConfidence: 0.5, turnsInCurrentTopic: 0,
+      salienceRankedTurns: [], backgroundSummary: 'First message — no history.',
+      unresolvedQuestion: null, stuckRepetitionCount: 0, approachesAttempted: [],
+      conceptsVisitedThisSession: [], hintLevelCurrent: 0,
     };
   }
 
-  const scored = history.map(t => ({ turn: t, score: salienceScore(t) }));
+  const scored = history.map(t => ({ turn: t, score: roughSalienceScore(t) }));
   scored.sort((a, b) => b.score - a.score);
 
-  const focusTurns = scored.slice(0, 4);
+  const focus = scored.slice(0, 4);
   const background = scored.slice(4).map(s => s.turn);
 
-  const salienceRankedTurns: SalientTurn[] = focusTurns.flatMap(({ turn, score }) => [
-    { role: 'student' as const, content: turn.studentMessage.slice(0, 300), salienceScore: score, tags: score > 2 ? ['high'] : ['moderate'] },
-    { role: 'tutor' as const, content: turn.tutorResponse.slice(0, 300), salienceScore: score * 0.8, tags: [] },
+  const salienceRankedTurns: SalientTurn[] = focus.flatMap(({ turn, score }) => [
+    { role: 'student' as const, content: turn.studentMessage.slice(0, 300), salienceScore: score },
+    { role: 'tutor' as const, content: turn.tutorResponse.slice(0, 300), salienceScore: score * 0.8 },
   ]);
 
-  // Find last analogy
-  let lastAnalogyUsed: string | null = null;
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (/think of it as|like a|similar to|just like|imagine/.test(history[i].tutorResponse.toLowerCase())) {
-      lastAnalogyUsed = history[i].tutorResponse.slice(0, 200);
-      break;
-    }
-  }
+  // Detect stuck loop — same type of confusion appearing multiple times
+  const confusionMessages = history.slice(-6).filter(t =>
+    /don't get|still confused|same question|don't understand|not making sense/.test(t.studentMessage.toLowerCase())
+  );
 
-  // Find last misconception
-  let lastMisconception: string | null = null;
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (/actually|small correction|common mistake|not quite|let me clarify/.test(history[i].tutorResponse.toLowerCase())) {
-      lastMisconception = history[i].studentMessage.slice(0, 200);
-      break;
-    }
-  }
+  const approachesAttempted: string[] = [];
+  history.slice(-6).forEach(t => {
+    if (/like|imagine|think of/.test(t.tutorResponse.toLowerCase())) approachesAttempted.push('analogy');
+    if (/step by step|first.*then.*finally/.test(t.tutorResponse.toLowerCase())) approachesAttempted.push('step_by_step');
+    if (/example|for instance/.test(t.tutorResponse.toLowerCase())) approachesAttempted.push('example');
+    if (/why|what do you think|can you guess/.test(t.tutorResponse.toLowerCase())) approachesAttempted.push('socratic');
+  });
 
-  // Find last scaffold
-  let lastScaffoldUsed: string | null = null;
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (/step by step|first let|start with|build from|let me show/.test(history[i].tutorResponse.toLowerCase())) {
-      lastScaffoldUsed = history[i].tutorResponse.slice(0, 150);
-      break;
-    }
-  }
+  const lastTopic = [...history].reverse().find(t => t.topic)?.topic || null;
+  const lastSubject = [...history].reverse().find(t => t.subject)?.subject || null;
+  const lastMisconception = [...history].reverse().find(t =>
+    /actually|small correction|common mistake|not quite|twist here/.test(t.tutorResponse.toLowerCase())
+  )?.studentMessage?.slice(0, 200) || null;
+  const lastAnalogy = [...history].reverse().find(t =>
+    /think of it as|like a|similar to|just like|imagine/.test(t.tutorResponse.toLowerCase())
+  )?.tutorResponse?.slice(0, 200) || null;
 
-  const stuckInfo = detectStuckLoop(history);
-  const { topic, subject } = findCurrentTopic(history);
-
-  const avgConfidence = history.slice(-3).reduce((sum, t) => sum + (t.emotionalSnapshot?.selfEfficacy ?? 0.5), 0) / Math.min(3, history.length);
+  const avgConfidence = history.slice(-3).reduce((s, t) => s + (t.aiAnalysis?.emotionalReading?.selfEfficacy ?? 0.5), 0) / Math.min(3, history.length);
 
   const lastMsg = history[history.length - 1]?.studentMessage || '';
-  const studentLeading = lastMsg.length > 40 || lastMsg.includes('?');
-
-  const unresolvedQuestion = (
-    lastMsg.includes('?') && history.length > 0 && history[history.length - 1].tutorResponse.length < 80
-  ) ? lastMsg : null;
-
-  const conceptsVisited = [...new Set(history.filter(t => t.topic).map(t => t.topic!))];
+  const unresolvedQuestion = lastMsg.includes('?') && history[history.length - 1]?.tutorResponse?.length < 80 ? lastMsg : null;
 
   const bgSummary = background.length === 0
-    ? 'Conversation just started.'
-    : background.map(t => `S: ${t.studentMessage.slice(0, 60)} | T: ${t.tutorResponse.slice(0, 60)}`).join(' — ');
-
-  const currentHintLevel = Math.min(stuckInfo.count * 10, 90);
+    ? 'Only recent turns available.'
+    : background.slice(0, 5).map(t => `S: ${t.studentMessage.slice(0, 60)} | T: ${t.tutorResponse.slice(0, 60)}`).join(' — ');
 
   return {
-    currentTopic: topic,
-    currentSubject: subject,
+    currentTopic: lastTopic,
+    currentSubject: lastSubject,
     lastMisconception,
-    lastScaffoldUsed,
-    lastAnalogyUsed,
+    lastAnalogyUsed: lastAnalogy,
     studentConfidence: avgConfidence,
     turnsInCurrentTopic: history.length,
     salienceRankedTurns,
     backgroundSummary: bgSummary,
     unresolvedQuestion,
-    studentLeadingConversation: studentLeading,
-    stuckRepetitionCount: stuckInfo.count,
-    approachesAttempted: stuckInfo.approaches,
-    conceptsVisitedThisSession: conceptsVisited,
-    hintLevelCurrent: currentHintLevel,
+    stuckRepetitionCount: confusionMessages.length,
+    approachesAttempted: [...new Set(approachesAttempted)],
+    conceptsVisitedThisSession: [...new Set(history.filter(t => t.topic).map(t => t.topic!))],
+    hintLevelCurrent: Math.min(confusionMessages.length * 20, 90),
   };
+}
+
+export function formatHistoryForOrchestrator(history: ConversationTurn[], limit = 10): string {
+  if (history.length === 0) return 'No previous turns in this session.';
+
+  return history.slice(-limit).map((t, i) =>
+    `Turn ${t.turnNumber}:\n  Student: "${t.studentMessage.slice(0, 200)}"\n  Tutor: "${t.tutorResponse.slice(0, 200)}"`
+  ).join('\n\n');
 }
