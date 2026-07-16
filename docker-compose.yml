@@ -1,37 +1,6 @@
 version: '3.9'
 
 services:
-  api:
-    build: .
-    ports:
-      - "3000:3000"
-    environment:
-      - DATABASE_URL=postgresql://waxprep:waxprep@postgres:5432/waxprep
-      - REDIS_URL=redis://redis:6379
-      - LLAMA_BRAIN_URL=http://llama-brain:8080
-      - LLAMA_ROUTER_URL=http://llama-router:8081
-    depends_on:
-      - postgres
-      - redis
-      - llama-brain
-      - llama-router
-    volumes:
-      - .:/app
-    command: node dist/index.js
-
-  brain:
-    build: .
-    environment:
-      - DATABASE_URL=postgresql://waxprep:waxprep@postgres:5432/waxprep
-      - REDIS_URL=redis://redis:6379
-      - LLAMA_BRAIN_URL=http://llama-brain:8080
-    depends_on:
-      - postgres
-      - redis
-      - llama-brain
-    command: node dist/brain/brain_agent.js
-    restart: unless-stopped
-
   postgres:
     image: pgvector/pgvector:pg16
     environment:
@@ -42,6 +11,11 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U waxprep"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
@@ -49,6 +23,11 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   llama-brain:
     image: ghcr.io/ggerganov/llama.cpp:server
