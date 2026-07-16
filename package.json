@@ -7,12 +7,12 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "brain": "tsx src/brain/brain_agent.ts",
-    "world-model": "tsx src/workers/world_model_worker.ts",
-    "notifications": "tsx src/workers/notification_worker.ts",
-    "evolve": "tsx src/workers/prompt_evolution_worker.ts",
-    "spaced-rep": "tsx src/workers/spaced_repetition.ts",
-    "setup-models": "bash scripts/download_models.sh"
+    "brain": "node dist/brain/brain_agent.js",
+    "world-model": "node dist/workers/world_model_worker.js",
+    "notifications": "node dist/workers/notification_worker.js",
+    "evolve": "node dist/workers/prompt_evolution_worker.js",
+    "spaced-rep": "node dist/workers/spaced_repetition.js",
+    "compress": "node dist/workers/memory_compressor.js"
   },
   "dependencies": {
     "express": "^4.19.2",
@@ -29,9 +29,7 @@
     "form-data": "^4.0.0",
     "node-cron": "^3.0.3",
     "pino": "^9.3.2",
-    "pino-pretty": "^11.2.1",
-    "node-fetch": "^3.3.2",
-    "child_process": "^1.0.2"
+    "pino-pretty": "^11.2.1"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
@@ -39,6 +37,7 @@
     "@types/uuid": "^10.0.0",
     "@types/node": "^22.0.0",
     "@types/node-cron": "^3.0.11",
+    "@types/pdf-parse": "^1.1.4",
     "typescript": "^5.5.4",
     "tsx": "^4.16.5"
   }
