@@ -15,6 +15,7 @@ import { db } from '../db/client';
 import { logger } from '../middleware/logger';
 import type { StudentProfile, MemoryBlocks, SymbolicBelief, ConceptProgress, BloomLevel, StudentFact } from '../types/student';
 import { bktFromResult, DEFAULT_BKT } from '../teaching/bkt';
+import { getConceptBktParams, logTraceEvent } from '../curriculum/bkt_params';
 
 export const DEFAULT_BLOCKS: MemoryBlocks = {
   humanProfile: 'New student. Nothing known yet. Listen carefully before teaching.',
@@ -160,7 +161,19 @@ export async function updateConceptEvidence(
   }
 
   // True BKT update (Corbett & Anderson) — masteryLevel is P(learned)
-  existing.masteryLevel = bktFromResult(existing.masteryLevel || DEFAULT_BKT.pL0, result);
+  // Per-concept params when available (learned from knowledge_trace_events)
+  const pBefore = existing.masteryLevel || DEFAULT_BKT.pL0;
+  let params = DEFAULT_BKT;
+  try { params = await getConceptBktParams(existing.conceptId || concept); } catch { /* defaults */ }
+  existing.masteryLevel = bktFromResult(pBefore, result, params);
+  logTraceEvent({
+    studentId,
+    conceptId: existing.conceptId || concept,
+    success: result === 'success',
+    pBefore,
+    pAfter: existing.masteryLevel,
+    source: 'updateConceptEvidence',
+  }).catch(() => {});
 
   if (misconception && !existing.misconceptions.includes(misconception)) {
     existing.misconceptions.push(misconception);

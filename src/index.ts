@@ -18,6 +18,7 @@ import { createWebhookRouter } from './whatsapp/webhook';
 import { getBrainStatus } from './brain/llama_server';
 import { getConstitution, setConstitution } from './config/constitution';
 import { logger } from './middleware/logger';
+import { bootstrapCurriculum } from './curriculum/engine';
 import type { MasteryDetected, DefenseTriggered, EmotionalAlert, PromptEvolved } from './types/events';
 
 async function main(): Promise<void> {
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
 
   try {
     await initializeDatabase();
+    await bootstrapCurriculum().catch(err => logger.warn({ err }, '[WaxPrep] Curriculum bootstrap failed'));;
     logger.info('[WaxPrep] Database initialized (schema v2)');
   } catch (err) {
     logger.error({ err }, '[WaxPrep] Database initialization failed');

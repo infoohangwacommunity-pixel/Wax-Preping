@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "packId": "ng_biology_utme_foundation",
+    "version": "1.0.0",
+    "title": "Nigeria Biology / Anatomy Foundation (UTME-aligned)",
+    "source": "Structured from public WAEC/JAMB biology topic outlines + NERDC science progression (not scraped; human-curated pack). Replace/extend via new pack versions.",
+    "sourceUrl": "https://nerdc.org.ng/eCurriculum/",
+    "license": "Educational use — WaxPrep pack",
+    "boards": ["WAEC", "NECO", "JAMB", "NERDC"],
+    "levels": ["sss", "utme", "foundation", "tertiary_prep"]
+  },
+  "subjects": [
+    {
+      "subjectId": "biology",
+      "name": "Biology",
+      "aliases": ["bio", "anatomy", "life science", "medicine prep", "human biology"],
+      "boards": ["WAEC", "NECO", "JAMB"],
+      "levels": ["sss", "utme", "foundation", "tertiary_prep"]
+    }
+  ],
+  "concepts": [
+    {
+      "conceptId": "cells_and_tissues",
+      "subjectId": "biology",
+      "title": "Cells — the basic unit of life",
+      "sequenceIndex": 10,
+      "difficulty": 0.2,
+      "bloomTarget": "remember",
+      "examTags": ["WAEC", "JAMB", "NECO"],
+      "objectives": ["Define a cell", "Relate cells to tissues"],
+      "misconceptions": ["plants get food only from soil"],
+      "localHooks": ["rooms in a block of flats = cells"],
+      "microLesson": "Everything in your body is built from cells — tiny living units, like rooms in a big house (your body). Tissues are groups of similar cells working together. Anatomy path: cell → tissue → organ → system.",
+      "keywords": ["cell", "tissue", "unit of life"]
+    },
+    {
+      "conceptId": "cell_structure",
+      "subjectId": "biology",
+      "title": "Cell structure (simple)",
+      "sequenceIndex": 20,
+      "difficulty": 0.3,
+      "bloomTarget": "understand",
+      "examTags": ["WAEC", "JAMB"],
+      "objectives": ["Name membrane, cytoplasm, nucleus", "Contrast plant vs animal cell basics"],
+      "localHooks": ["nucleus = school principal"],
+      "microLesson": "Animal cell: membrane (gate), cytoplasm (work space), nucleus (DNA control). Plant cells add wall + chloroplasts. For anatomy, master animal cell first.",
+      "keywords": ["membrane", "nucleus", "cytoplasm"]
+    },
+    {
+      "conceptId": "tissues_types",
+      "subjectId": "biology",
+      "title": "Four main tissue types",
+      "sequenceIndex": 30,
+      "difficulty": 0.35,
+      "bloomTarget": "understand",
+      "examTags": ["WAEC", "JAMB"],
+      "microLesson": "Epithelial covers, connective supports, muscle moves, nervous signals. Organs are multi-tissue structures.",
+      "keywords": ["epithelial", "connective", "muscle", "nervous"]
+    },
+    {
+      "conceptId": "organs_and_systems",
+      "subjectId": "biology",
+      "title": "Organs and systems",
+      "sequenceIndex": 40,
+      "difficulty": 0.4,
+      "bloomTarget": "understand",
+      "examTags": ["WAEC", "JAMB"],
+      "microLesson": "Organs (heart, liver, brain) combine tissues. Systems are organ teams. Anatomy = structure; physiology = function.",
+      "keywords": ["organ", "system"]
+    },
+    {
+      "conceptId": "skeletal_overview",
+      "subjectId": "biology",
+      "title": "Skeletal system overview",
+      "sequenceIndex": 50,
+      "difficulty": 0.45,
+      "bloomTarget": "remember",
+      "examTags": ["WAEC", "JAMB"],
+      "microLesson": "Skeleton supports, protects, enables movement with muscles. Axial vs appendicular. Bone is living tissue.",
+      "keywords": ["skeleton", "bone", "axial"]
+    },
+    {
+      "conceptId": "anatomical_terms",
+      "subjectId": "biology",
+      "title": "Anatomical direction words",
+      "sequenceIndex": 60,
+      "difficulty": 0.4,
+      "bloomTarget": "remember",
+      "examTags": ["JAMB"],
+      "microLesson": "Anterior/posterior, superior/inferior, medial/lateral, proximal/distal — shared map language for anatomy.",
+      "keywords": ["anterior", "posterior", "medial"]
+    },
+    {
+      "conceptId": "digestive_system_intro",
+      "subjectId": "biology",
+      "title": "Digestive system introduction",
+      "sequenceIndex": 70,
+      "difficulty": 0.5,
+      "bloomTarget": "understand",
+      "examTags": ["WAEC", "JAMB", "NECO"],
+      "microLesson": "Food path: mouth → oesophagus → stomach → small intestine → large intestine. Digestion breaks food; absorption takes nutrients into blood.",
+      "keywords": ["digestion", "absorption", "stomach"]
+    },
+    {
+      "conceptId": "circulatory_intro",
+      "subjectId": "biology",
+      "title": "Circulatory system introduction",
+      "sequenceIndex": 80,
+      "difficulty": 0.55,
+      "bloomTarget": "understand",
+      "examTags": ["WAEC", "JAMB"],
+      "microLesson": "Heart pumps blood through vessels. Arteries away, veins toward heart, capillaries exchange. Blood carries oxygen, food, waste.",
+      "keywords": ["heart", "blood", "artery"]
+    }
+  ],
+  "edges": [
+    { "fromConceptId": "cells_and_tissues", "toConceptId": "cell_structure", "relation": "prerequisite", "weight": 1 },
+    { "fromConceptId": "cell_structure", "toConceptId": "tissues_types", "relation": "prerequisite", "weight": 1 },
+    { "fromConceptId": "tissues_types", "toConceptId": "organs_and_systems", "relation": "prerequisite", "weight": 1 },
+    { "fromConceptId": "organs_and_systems", "toConceptId": "skeletal_overview", "relation": "prerequisite", "weight": 1 },
+    { "fromConceptId": "organs_and_systems", "toConceptId": "digestive_system_intro", "relation": "prerequisite", "weight": 1 },
+    { "fromConceptId": "organs_and_systems", "toConceptId": "circulatory_intro", "relation": "prerequisite", "weight": 1 },
+    { "fromConceptId": "skeletal_overview", "toConceptId": "anatomical_terms", "relation": "related", "weight": 0.6 }
+  ]
+}

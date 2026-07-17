@@ -14,7 +14,9 @@
     "spaced-rep": "node dist/workers/spaced_repetition.js",
     "compress": "node dist/workers/memory_compressor.js",
     "simulate:policy": "tsx scripts/simulate_policy.ts",
-    "simulate:phase2": "tsx scripts/simulate_phase2.ts"
+    "simulate:phase2": "tsx scripts/simulate_phase2.ts",
+    "simulate:phase3": "tsx scripts/simulate_phase3.ts",
+    "curriculum:ingest": "tsx -e \"require('./src/curriculum/ingest').ingestPackDirectory().then(r=>console.log(r))\""
   },
   "dependencies": {
     "express": "^4.19.2",

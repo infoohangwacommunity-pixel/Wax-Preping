@@ -33,6 +33,7 @@ import {
 import { assessCurriculum } from '../teaching/curriculum';
 import { getSubjectPedagogy, formatSubjectContext } from '../teaching/strategies';
 import { nextLessonNode, formatLessonPacket } from '../teaching/lesson_graph';
+import { bootstrapCurriculum, recommendConcept } from '../curriculum/engine';
 import { recordTurnMetric } from '../observability/metrics';
 import { runDefenseChecks } from '../defense/defense';
 import { runReflection, getReflectionSummary } from '../reflection/reflection';
@@ -165,12 +166,34 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
     ? profile.conceptProgress[currentConcept].masteryLevel
     : 0.5;
 
-  const lessonNode = nextLessonNode(
+  await bootstrapCurriculum().catch(() => {});
+  let lessonNode = nextLessonNode(
     currentSubject,
     profile.conceptProgress || {},
     currentConcept || session.state.currentConcept
   );
-  const lessonPacket = formatLessonPacket(lessonNode);
+  let lessonPacket = formatLessonPacket(lessonNode);
+  // Prefer DB-backed curriculum engine when packs are ingested
+  try {
+    const rec = await recommendConcept({
+      subjectQuery: currentSubject,
+      currentConceptId: currentConcept || session.state.currentConcept,
+      conceptProgress: profile.conceptProgress || {},
+    });
+    if (rec) {
+      lessonNode = {
+        id: rec.concept.conceptId,
+        subject: rec.concept.subjectId,
+        title: rec.concept.title,
+        prerequisites: [],
+        microLesson: rec.concept.microLesson || rec.concept.title,
+        bloomTarget: (rec.concept.bloomTarget as 'remember' | 'understand' | 'apply') || 'understand',
+        examTags: rec.concept.examTags as string[],
+        localHook: rec.concept.localHooks?.[0] || '',
+      };
+      lessonPacket = rec.packet;
+    }
+  } catch { /* pack-file fallback already in lessonNode */ }
   const dossier = buildStudentDossier(profile, session.state);
 
   const subjectContext = [

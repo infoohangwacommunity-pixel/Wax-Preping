@@ -3,7 +3,7 @@
  * No DB / LLM required.
  */
 import { bktFromResult, masteryBand, DEFAULT_BKT } from '../src/teaching/bkt';
-import { nextLessonNode, formatLessonPacket, BIOLOGY_FOUNDATION } from '../src/teaching/lesson_graph';
+import { nextLessonNode, formatLessonPacket } from '../src/teaching/lesson_graph';
 import { buildStudentDossier } from '../src/memory/dossier';
 import { decideTeachingPolicy, applyPolicyToPlan } from '../src/teaching/policy';
 import { EMPTY_SESSION_STATE } from '../src/session/manager';
@@ -32,7 +32,7 @@ node = nextLessonNode('biology', progress, 'cells_and_tissues');
 if (node.id !== 'cell_structure') failures.push(`Expected cell_structure after mastery, got ${node.id}`);
 const packet = formatLessonPacket(node);
 if (!packet.includes('micro-lesson')) failures.push('lesson packet missing micro-lesson');
-console.log(`Lesson graph: start=${BIOLOGY_FOUNDATION[0].id} next=${node.id}`);
+console.log(`Lesson graph: next=${node.id}`);
 
 // ── Dossier ───────────────────────────────────────────────────────────────
 const profile: StudentProfile = {
