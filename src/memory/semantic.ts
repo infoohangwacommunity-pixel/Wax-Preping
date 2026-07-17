@@ -14,6 +14,7 @@
 import { db } from '../db/client';
 import { logger } from '../middleware/logger';
 import type { StudentProfile, MemoryBlocks, SymbolicBelief, ConceptProgress, BloomLevel, StudentFact } from '../types/student';
+import { bktFromResult, DEFAULT_BKT } from '../teaching/bkt';
 
 export const DEFAULT_BLOCKS: MemoryBlocks = {
   humanProfile: 'New student. Nothing known yet. Listen carefully before teaching.',
@@ -158,10 +159,8 @@ export async function updateConceptEvidence(
     existing.bloomLevel = bloomLevel;
   }
 
-  const stepUp = 0.18 * (1 - existing.masteryLevel);
-  const stepDown = 0.25 * existing.masteryLevel;
-  if (result === 'success') existing.masteryLevel = Math.min(0.98, existing.masteryLevel + stepUp);
-  else if (result === 'struggle') existing.masteryLevel = Math.max(0.02, existing.masteryLevel - stepDown);
+  // True BKT update (Corbett & Anderson) — masteryLevel is P(learned)
+  existing.masteryLevel = bktFromResult(existing.masteryLevel || DEFAULT_BKT.pL0, result);
 
   if (misconception && !existing.misconceptions.includes(misconception)) {
     existing.misconceptions.push(misconception);

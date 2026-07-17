@@ -6,10 +6,10 @@
  * teach this turn — then the teach-first policy engine hard-constrains the
  * plan so the model cannot default to endless interrogation.
  *
- * v1: policy engine runs BEFORE and AFTER the LLM call.
- * - Before: situation brief includes the hard move (teach vs ask).
- * - After: applyPolicyToPlan enforces askQuestion / strategy / mustInclude.
- * - Fallback: policy-driven defaults (no longer "ask almost always").
+ * Phase-2: policy engine is a SOFT ADVISOR for the LLM (context + preferred moves).
+ * Hard enforcement only for safety-critical student signals (exit, emotional crisis,
+ * "I don't know", "I'm ready", consecutive-question budget) so the model stays free
+ * to reason while we still prevent interrogation loops.
  */
 import { routeAndCall } from '../llm/router';
 import { getPrompt } from '../config/prompts';
@@ -35,12 +35,13 @@ export async function deliberate(ctx: TurnContext): Promise<TeachingPlan> {
     isFirstMessage: ctx.isFirstMessage,
   });
 
-  const fallbackPlan = applyPolicyToPlan(
-    buildFallbackPlan(ctx, relationshipStage, policy),
-    policy
-  );
+  const hardEnforce = shouldHardEnforce(policy.move, perception, sessionState);
+
+  const fallbackPlan = hardEnforce
+    ? applyPolicyToPlan(buildFallbackPlan(ctx, relationshipStage, policy), policy)
+    : softAdvisePlan(buildFallbackPlan(ctx, relationshipStage, policy), policy);
   fallbackPlan.policyMove = policy.move;
-  fallbackPlan.mustTeachContent = policy.mustTeachContent;
+  fallbackPlan.mustTeachContent = hardEnforce ? policy.mustTeachContent : (policy.mustTeachContent || false);
   fallbackPlan.maxQuestionsThisTurn = policy.maxQuestionsThisTurn;
 
   try {
@@ -100,10 +101,23 @@ export async function deliberate(ctx: TurnContext): Promise<TeachingPlan> {
 
     const parsed = JSON.parse(response.content.replace(/```json|```/g, '').trim());
     const rawPlan = normalizePlan(parsed, fallbackPlan, relationshipStage);
-    const constrained = applyPolicyToPlan(rawPlan, policy);
+    const constrained = hardEnforce
+      ? applyPolicyToPlan(rawPlan, policy)
+      : softAdvisePlan(rawPlan, policy);
     constrained.policyMove = policy.move;
-    constrained.mustTeachContent = policy.mustTeachContent;
-    constrained.maxQuestionsThisTurn = policy.maxQuestionsThisTurn;
+    // Only force mustTeach when hard policy requires it; otherwise trust LLM + soft advise
+    if (hardEnforce) {
+      constrained.mustTeachContent = policy.mustTeachContent;
+      constrained.maxQuestionsThisTurn = policy.maxQuestionsThisTurn;
+    } else {
+      constrained.mustTeachContent = constrained.mustTeachContent || policy.mustTeachContent;
+      constrained.maxQuestionsThisTurn = policy.maxQuestionsThisTurn;
+      // Soft cap: never more than 1 question
+      if (constrained.askQuestion && policy.maxQuestionsThisTurn === 0) {
+        constrained.askQuestion = false;
+        constrained.questionPurpose = 'none';
+      }
+    }
     return constrained;
   } catch (err) {
     logger.warn({ err }, '[Deliberation] Failed — using policy-driven fallback plan');
@@ -197,6 +211,54 @@ function normalizePlan(
     needsTools: Array.isArray(parsed.needsTools) ? (parsed.needsTools as string[]).slice(0, 3) : [],
     expectedOutcome: (parsed.expectedOutcome as string) || fallback.expectedOutcome,
   };
+}
+
+
+function shouldHardEnforce(
+  move: string,
+  perception: TurnContext['perception'],
+  sessionState: TurnContext['sessionState']
+): boolean {
+  // Hard only when student safety / anti-interrogation is at stake
+  if (move === 'wrap_and_invite_back' || move === 'reassurance_only') return true;
+  if ((sessionState.consecutiveQuestions || 0) >= 2) return true;
+  // ready / don't know / exit are encoded as teach_micro_chunk or wrap — use message
+  const msg = perception.rawMessage || '';
+  if (/\b(i'?m|i am|am)\s+ready\b/i.test(msg)) return true;
+  if (/\bi\s+don'?t\s+know\b|\bidk\b/i.test(msg)) return true;
+  if (/\bbye\b|\bi'?m\s+busy\b|\bwill\s+come\s+back\b/i.test(msg)) return true;
+  if (perception.cognitiveLoad === 'overloaded' || perception.emotionalSignals.shamePotential > 0.75) return true;
+  return false;
+}
+
+/** Soft advisor: prefer strategies / include hints, but do not rewrite the LLM plan wholesale. */
+function softAdvisePlan(plan: TeachingPlan, policy: TeachingPolicy): TeachingPlan {
+  let strategy = plan.strategy;
+  if (policy.bannedStrategies.includes(strategy) && policy.preferredStrategies.length > 0) {
+    strategy = policy.preferredStrategies[0];
+  }
+  return {
+    ...plan,
+    strategy,
+    strategyReason: `${plan.strategyReason} | soft-policy:${policy.move}`,
+    mustInclude: uniqueSoft([...policy.mustInclude.slice(0, 2), ...plan.mustInclude]).slice(0, 6),
+    mustAvoid: uniqueSoft([...policy.mustAvoid.slice(0, 3), ...plan.mustAvoid]).slice(0, 8),
+    warmthLevel: Math.max(plan.warmthLevel, policy.warmthLevel * 0.85),
+    maxQuestionsThisTurn: policy.maxQuestionsThisTurn,
+    policyMove: policy.move,
+  };
+}
+
+function uniqueSoft(items: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of items) {
+    const key = item.toLowerCase().trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
 }
 
 function clamp01(v: unknown, fallback: number): number {

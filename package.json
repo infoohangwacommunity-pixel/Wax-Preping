@@ -12,7 +12,9 @@
     "notifications": "node dist/workers/notification_worker.js",
     "evolve": "node dist/workers/prompt_evolution_worker.js",
     "spaced-rep": "node dist/workers/spaced_repetition.js",
-    "compress": "node dist/workers/memory_compressor.js"
+    "compress": "node dist/workers/memory_compressor.js",
+    "simulate:policy": "tsx scripts/simulate_policy.ts",
+    "simulate:phase2": "tsx scripts/simulate_phase2.ts"
   },
   "dependencies": {
     "express": "^4.19.2",

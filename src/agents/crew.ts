@@ -32,6 +32,8 @@ import {
 } from '../teaching/policy';
 import { assessCurriculum } from '../teaching/curriculum';
 import { getSubjectPedagogy, formatSubjectContext } from '../teaching/strategies';
+import { nextLessonNode, formatLessonPacket } from '../teaching/lesson_graph';
+import { recordTurnMetric } from '../observability/metrics';
 import { runDefenseChecks } from '../defense/defense';
 import { runReflection, getReflectionSummary } from '../reflection/reflection';
 import { buildWorkingMemory, formatHistoryForOrchestrator } from '../memory/working';
@@ -39,6 +41,7 @@ import { getStudentProfile, updateStudyStreak, incrementTurns, updateSymbolicBel
 import { saveEpisode, getRecentHistory, recallRelevantEpisodes } from '../memory/episodic';
 import { updateStudentModel } from '../memory/student_model';
 import { applyInstantFacts } from '../memory/instant_facts';
+import { buildStudentDossier } from '../memory/dossier';
 import { getOrCreateSession, touchSession, updateSessionState } from '../session/manager';
 import { scheduleConceptReview, getDueReviews } from '../features/spaced_repetition';
 import { suggestNextConcept } from '../neuro_symbolic/knowledge_graph';
@@ -162,9 +165,21 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
     ? profile.conceptProgress[currentConcept].masteryLevel
     : 0.5;
 
-  const subjectContext = subjectPedagogy
-    ? formatSubjectContext(subjectPedagogy, currentSubject, currentConcept, knowledgeLevel)
-    : '';
+  const lessonNode = nextLessonNode(
+    currentSubject,
+    profile.conceptProgress || {},
+    currentConcept || session.state.currentConcept
+  );
+  const lessonPacket = formatLessonPacket(lessonNode);
+  const dossier = buildStudentDossier(profile, session.state);
+
+  const subjectContext = [
+    subjectPedagogy
+      ? formatSubjectContext(subjectPedagogy, currentSubject, currentConcept, knowledgeLevel)
+      : '',
+    lessonPacket,
+    `STUDENT DOSSIER (hierarchical memory — use, do not re-ask known facts):\n${dossier}`,
+  ].filter(Boolean).join('\n\n');
 
   const ctx: TurnContext = {
     studentId,
@@ -274,8 +289,8 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
     ? currentSubject
     : (session.state.currentSubject || inferSubjectFromGoal(goalSubject) || currentSubject);
   const resolvedConcept = currentConcept || session.state.currentConcept || (
-    signals.readyToLearn || signals.foundationGap
-      ? firstConceptForSubject(resolvedSubject)
+    signals.readyToLearn || signals.foundationGap || plan.mustTeachContent
+      ? lessonNode.id
       : null
   );
 
@@ -339,6 +354,18 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
     strategy: plan.strategy,
   };
   eventBus.publish(responseEvent).catch(() => {});
+
+  recordTurnMetric({
+    studentId,
+    sessionId,
+    turnNumber: turn.turnNumber,
+    askedQuestion: plan.askQuestion === true || responseContainsQuestion(finalResponse),
+    taughtContent: plan.mustTeachContent === true || responseLooksLikeTeaching(finalResponse),
+    policyMove: plan.policyMove,
+    strategy: plan.strategy,
+    defenseIssues: defense.issues.length,
+    latencyMs,
+  }).catch(() => {});
 
   // ── 10. Async post-turn cognition (never blocks the reply) ─────────────
   setImmediate(() => {
