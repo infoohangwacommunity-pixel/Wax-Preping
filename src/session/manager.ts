@@ -21,6 +21,13 @@ export const EMPTY_SESSION_STATE: SessionState = {
   lastStrategy: null,
   bloomLevel: null,
   unresolvedQuestion: null,
+  consecutiveQuestions: 0,
+  questionsThisSession: 0,
+  lastTutorAskedQuestion: false,
+  turnsSinceLastTeach: 0,
+  lastMove: null,
+  readinessSignal: false,
+  foundationGapDisclosed: false,
 };
 
 export async function getOrCreateSession(studentId: string): Promise<Session> {

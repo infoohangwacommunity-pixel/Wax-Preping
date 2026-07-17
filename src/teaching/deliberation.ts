@@ -3,32 +3,66 @@
  *
  * ONE smart-tier call that sees everything (perception, profile, memory,
  * history, recalled episodes, world model, session state) and decides how to
- * teach this turn. Replaces v1's swarm router + emotional agent + cultural
- * agent + chain stages 1-3 (4-6 sequential calls, each partially blind) with
- * a single fully-informed decision, per the Perception→Orchestration→
- * Elicitation architecture validated in recent Socratic-tutor research.
+ * teach this turn — then the teach-first policy engine hard-constrains the
+ * plan so the model cannot default to endless interrogation.
  *
- * Fallback: a reasoned default plan derived from perception + session state
- * keeps the turn alive if the call fails.
+ * v2.1: policy engine runs BEFORE and AFTER the LLM call.
+ * - Before: situation brief includes the hard move (teach vs ask).
+ * - After: applyPolicyToPlan enforces askQuestion / strategy / mustInclude.
+ * - Fallback: policy-driven defaults (no longer "ask almost always").
  */
 import { routeAndCall } from '../llm/router';
 import { getPrompt } from '../config/prompts';
 import { logger } from '../middleware/logger';
+import {
+  applyPolicyToPlan,
+  decideTeachingPolicy,
+  detectStudentSignals,
+  type TeachingPolicy,
+} from './policy';
 import type { TeachingPlan, TurnContext } from '../types/teaching';
 
 export async function deliberate(ctx: TurnContext): Promise<TeachingPlan> {
-  const { perception, profile, sessionState, workingMemory } = ctx;
+  const { perception, profile, sessionState } = ctx;
 
   const relationshipStage: TeachingPlan['relationshipStage'] =
     profile.totalTurns === 0 ? 'new' : profile.totalTurns < 20 ? 'familiar' : 'established';
 
-  const fallbackPlan = buildFallbackPlan(ctx, relationshipStage);
+  const policy = decideTeachingPolicy({
+    perception,
+    profile,
+    sessionState,
+    isFirstMessage: ctx.isFirstMessage,
+  });
+
+  const fallbackPlan = applyPolicyToPlan(
+    buildFallbackPlan(ctx, relationshipStage, policy),
+    policy
+  );
+  fallbackPlan.policyMove = policy.move;
+  fallbackPlan.mustTeachContent = policy.mustTeachContent;
+  fallbackPlan.maxQuestionsThisTurn = policy.maxQuestionsThisTurn;
 
   try {
-    const instruction = await getPrompt('deliberation.v1');
+    const instruction = await getPrompt('deliberation.v2');
 
+    const signals = detectStudentSignals(perception.rawMessage);
     const situation = [
-      `RELATIONSHIP: ${relationshipStage} student (${profile.totalTurns} lifetime turns, streak ${profile.studyStreak} days)${ctx.isFirstMessage ? ' — THIS IS THEIR VERY FIRST MESSAGE. Help first. Zero interrogation. At most one natural get-to-know-you question woven into real help.' : ''}`,
+      `RELATIONSHIP: ${relationshipStage} student (${profile.totalTurns} lifetime turns, streak ${profile.studyStreak} days)${ctx.isFirstMessage ? ' — THIS IS THEIR VERY FIRST MESSAGE. Sound human. Zero formal onboarding. At most one natural question.' : ''}`,
+      `\nHARD TEACHING POLICY (non-negotiable — your plan MUST obey this):`,
+      `- move: ${policy.move}`,
+      `- mustTeachContent: ${policy.mustTeachContent}`,
+      `- forceAskQuestion: ${policy.forceAskQuestion === null ? 'your judgment (max 1)' : policy.forceAskQuestion}`,
+      `- maxQuestionsThisTurn: ${policy.maxQuestionsThisTurn}`,
+      `- preferred strategies: ${policy.preferredStrategies.join(', ')}`,
+      `- banned strategies: ${policy.bannedStrategies.join(', ') || 'none'}`,
+      `- policy reason: ${policy.reason}`,
+      `- consecutive questions so far: ${sessionState.consecutiveQuestions ?? 0}`,
+      `- questions this session: ${sessionState.questionsThisSession ?? 0}`,
+      `- last tutor asked a question: ${sessionState.lastTutorAskedQuestion ?? false}`,
+      `- turns since last teach: ${sessionState.turnsSinceLastTeach ?? 0}`,
+      `\nSTUDENT SIGNALS:`,
+      `- readyToLearn=${signals.readyToLearn} | doesNotKnow=${signals.doesNotKnow} | wantsExit=${signals.wantsExit} | foundationGap=${signals.foundationGap} | shortAck=${signals.shortAck}`,
       `\nPERCEPTION OF THIS MESSAGE:`,
       `- intent: ${perception.primaryIntent} | topic: ${perception.inferredTopic || 'none'} | subject: ${perception.inferredSubject || 'none'}`,
       `- emotion: ${perception.emotionalSignals.dominantEmotion} (shame ${f2(perception.emotionalSignals.shamePotential)}, frustration ${f2(perception.emotionalSignals.frustration)}, curiosity ${f2(perception.emotionalSignals.curiosity)}, self-efficacy ${f2(perception.emotionalSignals.selfEfficacy)}, flow ${f2(perception.emotionalSignals.flowIndicator)})`,
@@ -38,7 +72,7 @@ export async function deliberate(ctx: TurnContext): Promise<TeachingPlan> {
       `\nTEACHING STATE (this session):`,
       `- current concept: ${sessionState.currentConcept || 'none'} | hint level: ${sessionState.hintLevel}% | struggles this session: ${sessionState.struggleCount}`,
       `- approaches already tried (do NOT repeat): ${sessionState.approachesTried.join(', ') || 'none'}`,
-      `- last strategy used: ${sessionState.lastStrategy || 'none'}`,
+      `- last strategy used: ${sessionState.lastStrategy || 'none'} | last move: ${sessionState.lastMove || 'none'}`,
       `\nWHO THE STUDENT IS:`,
       `- profile: ${profile.memoryBlocks.humanProfile.slice(0, 250)}`,
       `- learning style: ${profile.memoryBlocks.learningStyle.slice(0, 200)}`,
@@ -49,13 +83,14 @@ export async function deliberate(ctx: TurnContext): Promise<TeachingPlan> {
       `\nCONTEXT:`,
       ctx.conversationHistory ? `Recent conversation:\n${ctx.conversationHistory.slice(-900)}` : 'No conversation yet.',
       ctx.recalledEpisodes ? `\nRELEVANT PAST MOMENTS (other sessions):\n${ctx.recalledEpisodes}` : '',
-      ctx.dueReviews ? `\nSPACED REVIEWS DUE: ${ctx.dueReviews} — consider weaving one in naturally IF the moment allows` : '',
+      ctx.dueReviews ? `\nSPACED REVIEWS DUE: ${ctx.dueReviews} — weave one in only if the moment allows AND policy allows a question` : '',
       ctx.reflectionLessons ? `\n${ctx.reflectionLessons}` : '',
       ctx.worldModelInsight ? `\nWORLD MODEL: ${ctx.worldModelInsight}` : '',
       ctx.causalInsight ? `\nROOT-CAUSE ANALYSIS: ${ctx.causalInsight}` : '',
       ctx.subjectContext ? `\n${ctx.subjectContext}` : '',
       ctx.toolContext ? `\nRESOURCES:\n${ctx.toolContext.slice(0, 500)}` : '',
       `\nSTUDENT'S MESSAGE: "${perception.rawMessage.slice(0, 600)}"`,
+      `\nRemember: if mustTeachContent is true, your plan MUST deliver real content this turn. If maxQuestionsThisTurn is 0, set askQuestion=false.`,
     ].filter(Boolean).join('\n');
 
     const response = await routeAndCall([
@@ -64,47 +99,67 @@ export async function deliberate(ctx: TurnContext): Promise<TeachingPlan> {
     ], { tier: 'smart', jsonMode: true, maxTokens: 550, temperature: 0.35, studentId: ctx.studentId, purpose: 'deliberation' });
 
     const parsed = JSON.parse(response.content.replace(/```json|```/g, '').trim());
-    return normalizePlan(parsed, fallbackPlan, relationshipStage);
+    const rawPlan = normalizePlan(parsed, fallbackPlan, relationshipStage);
+    const constrained = applyPolicyToPlan(rawPlan, policy);
+    constrained.policyMove = policy.move;
+    constrained.mustTeachContent = policy.mustTeachContent;
+    constrained.maxQuestionsThisTurn = policy.maxQuestionsThisTurn;
+    return constrained;
   } catch (err) {
-    logger.warn({ err }, '[Deliberation] Failed — using reasoned fallback plan');
+    logger.warn({ err }, '[Deliberation] Failed — using policy-driven fallback plan');
     return fallbackPlan;
   }
 }
 
-function buildFallbackPlan(ctx: TurnContext, relationshipStage: TeachingPlan['relationshipStage']): TeachingPlan {
+function buildFallbackPlan(
+  ctx: TurnContext,
+  relationshipStage: TeachingPlan['relationshipStage'],
+  policy: TeachingPolicy
+): TeachingPlan {
   const { perception, sessionState } = ctx;
   const es = perception.emotionalSignals;
 
-  let strategy: TeachingPlan['strategy'] = 'direct_explanation';
+  let strategy: TeachingPlan['strategy'] = policy.preferredStrategies[0] || 'direct_explanation';
   if (perception.primaryIntent === 'expressing_emotion' || es.shamePotential > 0.6) strategy = 'reassurance';
   else if (perception.primaryIntent === 'casual_chat' || perception.primaryIntent === 'greeting') strategy = 'listen_and_connect';
   else if (sessionState.struggleCount >= 2 || perception.isRepeatedQuestion) strategy = 'pivot_completely';
-  else if (es.flowIndicator > 0.6) strategy = 'socratic';
-  else if (perception.hasMisconception) strategy = 'elaborative_interrogation';
+  else if (policy.mustTeachContent) strategy = policy.preferredStrategies[0] || 'direct_explanation';
+  else if (es.flowIndicator > 0.6 && policy.maxQuestionsThisTurn > 0) strategy = 'socratic';
+  else if (perception.hasMisconception) strategy = policy.mustTeachContent ? 'direct_explanation' : 'elaborative_interrogation';
   else if (perception.primaryIntent === 'asking_answer') strategy = 'hint_ladder';
+
+  const askQuestion =
+    policy.forceAskQuestion === null
+      ? false // default OFF in fallback — teach first
+      : policy.forceAskQuestion;
 
   return {
     strategy,
-    strategyReason: 'Fallback reasoning from perception and session state',
-    warmthLevel: es.shamePotential > 0.5 || es.frustration > 0.5 ? 0.9 : 0.7,
-    challengeLevel: es.flowIndicator > 0.6 ? 0.8 : 0.5,
-    pacing: es.frustration > 0.5 || sessionState.struggleCount >= 2 ? 'slow' : 'normal',
+    strategyReason: `Fallback + policy:${policy.move}`,
+    warmthLevel: policy.warmthLevel,
+    challengeLevel: policy.challengeLevel,
+    pacing: policy.pacing,
     hintLevel: Math.min(90, sessionState.struggleCount * 25),
-    useAnalogy: sessionState.struggleCount >= 1,
+    useAnalogy: policy.mustTeachContent && sessionState.struggleCount >= 1,
     analogyDomain: null,
-    askQuestion: perception.primaryIntent !== 'expressing_emotion',
-    questionPurpose: 'guide_thinking',
+    askQuestion: askQuestion && policy.maxQuestionsThisTurn > 0,
+    questionPurpose: askQuestion ? 'guide_thinking' : 'none',
     addressMisconception: perception.hasMisconception,
     misconceptionCorrection: perception.misconceptionDescription,
     connectToMemory: null,
-    emotionalApproach: es.shamePotential > 0.5 ? 'Maximum warmth, smallest possible first step' : 'Warm and encouraging',
-    mustInclude: [],
-    mustAvoid: ['giving the final answer'],
-    sessionGoal: 'Move understanding one step forward',
-    bloomTarget: 'understand',
+    emotionalApproach: policy.emotionalApproach,
+    mustInclude: [...policy.mustInclude],
+    mustAvoid: [...policy.mustAvoid, 'giving the final answer'],
+    sessionGoal: policy.sessionGoal,
+    bloomTarget: policy.bloomTarget,
     relationshipStage,
     needsTools: [],
-    expectedOutcome: 'Student engages with the next step',
+    expectedOutcome: policy.mustTeachContent
+      ? 'Student receives a clear micro-lesson they can stand on'
+      : 'Student feels understood and knows the next step',
+    policyMove: policy.move,
+    mustTeachContent: policy.mustTeachContent,
+    maxQuestionsThisTurn: policy.maxQuestionsThisTurn,
   };
 }
 
@@ -113,6 +168,12 @@ function normalizePlan(
   fallback: TeachingPlan,
   relationshipStage: TeachingPlan['relationshipStage']
 ): TeachingPlan {
+  // CRITICAL FIX: was `parsed.askQuestion !== false` which forced true whenever
+  // the model omitted the field or returned anything other than explicit false.
+  // Now default to fallback (policy-aware), only true when explicitly true.
+  const askQuestion =
+    typeof parsed.askQuestion === 'boolean' ? parsed.askQuestion : fallback.askQuestion;
+
   return {
     strategy: (parsed.strategy as TeachingPlan['strategy']) || fallback.strategy,
     strategyReason: (parsed.strategyReason as string) || fallback.strategyReason,
@@ -122,14 +183,14 @@ function normalizePlan(
     hintLevel: Math.max(0, Math.min(100, typeof parsed.hintLevel === 'number' ? parsed.hintLevel : fallback.hintLevel)),
     useAnalogy: parsed.useAnalogy === true,
     analogyDomain: (parsed.analogyDomain as string) || null,
-    askQuestion: parsed.askQuestion !== false,
-    questionPurpose: (parsed.questionPurpose as TeachingPlan['questionPurpose']) || fallback.questionPurpose,
+    askQuestion,
+    questionPurpose: (parsed.questionPurpose as TeachingPlan['questionPurpose']) || (askQuestion ? fallback.questionPurpose : 'none'),
     addressMisconception: parsed.addressMisconception === true,
     misconceptionCorrection: (parsed.misconceptionCorrection as string) || null,
     connectToMemory: (parsed.connectToMemory as string) || null,
     emotionalApproach: (parsed.emotionalApproach as string) || fallback.emotionalApproach,
-    mustInclude: Array.isArray(parsed.mustInclude) ? (parsed.mustInclude as string[]).slice(0, 4) : [],
-    mustAvoid: Array.isArray(parsed.mustAvoid) ? (parsed.mustAvoid as string[]).slice(0, 4) : fallback.mustAvoid,
+    mustInclude: Array.isArray(parsed.mustInclude) ? (parsed.mustInclude as string[]).slice(0, 6) : fallback.mustInclude,
+    mustAvoid: Array.isArray(parsed.mustAvoid) ? (parsed.mustAvoid as string[]).slice(0, 8) : fallback.mustAvoid,
     sessionGoal: (parsed.sessionGoal as string) || fallback.sessionGoal,
     bloomTarget: (parsed.bloomTarget as TeachingPlan['bloomTarget']) || fallback.bloomTarget,
     relationshipStage,

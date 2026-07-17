@@ -25,6 +25,11 @@ import { eventBus } from '../events/bus';
 import { perceive, type IncomingMedia } from '../perception';
 import { deliberate } from '../teaching/deliberation';
 import { generate } from '../teaching/generation';
+import {
+  detectStudentSignals,
+  responseContainsQuestion,
+  responseLooksLikeTeaching,
+} from '../teaching/policy';
 import { assessCurriculum } from '../teaching/curriculum';
 import { getSubjectPedagogy, formatSubjectContext } from '../teaching/strategies';
 import { runDefenseChecks } from '../defense/defense';
@@ -33,6 +38,7 @@ import { buildWorkingMemory, formatHistoryForOrchestrator } from '../memory/work
 import { getStudentProfile, updateStudyStreak, incrementTurns, updateSymbolicBelief, applyMemoryEdit } from '../memory/semantic';
 import { saveEpisode, getRecentHistory, recallRelevantEpisodes } from '../memory/episodic';
 import { updateStudentModel } from '../memory/student_model';
+import { applyInstantFacts } from '../memory/instant_facts';
 import { getOrCreateSession, touchSession, updateSessionState } from '../session/manager';
 import { scheduleConceptReview, getDueReviews } from '../features/spaced_repetition';
 import { suggestNextConcept } from '../neuro_symbolic/knowledge_graph';
@@ -104,6 +110,17 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
       recommendedAction: 'Deliberation informed — prioritize emotional safety this turn',
     };
     eventBus.publish(alert).catch(() => {});
+  }
+
+
+  // Instant durable facts (no LLM) so next deliberation already knows goals/course
+  await applyInstantFacts(studentId, perception.rawMessage).catch(() => {});
+  // Refresh profile if we may have written facts (cheap re-read)
+  if (Object.keys(profile.facts || {}).length < 3) {
+    try {
+      const refreshed = await getStudentProfile(studentId);
+      Object.assign(profile, refreshed);
+    } catch { /* keep existing profile */ }
   }
 
   // ── 3. Context assembly (all in parallel) ───────────────────────────────
@@ -239,15 +256,45 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
   const approachesTried = [...session.state.approachesTried];
   if (!approachesTried.includes(plan.strategy)) approachesTried.push(plan.strategy);
 
+  const signals = detectStudentSignals(perception.rawMessage);
+  const askedQuestion = plan.askQuestion || responseContainsQuestion(finalResponse);
+  const taught = plan.mustTeachContent === true || responseLooksLikeTeaching(finalResponse);
+  const consecutiveQuestions = askedQuestion
+    ? (session.state.consecutiveQuestions || 0) + 1
+    : 0;
+  const questionsThisSession = (session.state.questionsThisSession || 0) + (askedQuestion ? 1 : 0);
+  const turnsSinceLastTeach = taught ? 0 : (session.state.turnsSinceLastTeach || 0) + 1;
+
+  // Prefer subject inferred from student goals when perception is empty
+  const goalSubject =
+    profile.facts?.intended_course?.factValue ||
+    profile.facts?.subject_interest?.factValue ||
+    null;
+  const resolvedSubject = currentSubject !== 'general'
+    ? currentSubject
+    : (session.state.currentSubject || inferSubjectFromGoal(goalSubject) || currentSubject);
+  const resolvedConcept = currentConcept || session.state.currentConcept || (
+    signals.readyToLearn || signals.foundationGap
+      ? firstConceptForSubject(resolvedSubject)
+      : null
+  );
+
   await updateSessionState(sessionId, {
-    currentConcept: currentConcept || session.state.currentConcept,
-    currentSubject: currentSubject || session.state.currentSubject,
+    currentConcept: resolvedConcept,
+    currentSubject: resolvedSubject,
     hintLevel: succeeded ? 0 : Math.min(90, struggleCount * 25),
     struggleCount,
     approachesTried: approachesTried.slice(-8),
     lastStrategy: plan.strategy,
     bloomLevel: plan.bloomTarget,
-    unresolvedQuestion: null,
+    unresolvedQuestion: askedQuestion ? finalResponse.slice(0, 200) : null,
+    consecutiveQuestions,
+    questionsThisSession,
+    lastTutorAskedQuestion: askedQuestion,
+    turnsSinceLastTeach,
+    lastMove: plan.policyMove || plan.strategy,
+    readinessSignal: session.state.readinessSignal || signals.readyToLearn,
+    foundationGapDisclosed: session.state.foundationGapDisclosed || signals.foundationGap,
   }).catch(() => {});
 
   // ── 9. Persist the turn ─────────────────────────────────────────────────
@@ -365,7 +412,7 @@ async function runPostTurn(
     }
   }
 
-  await recordPromptPerformance('generation.v1', studentId, sessionId, turn.turnNumber, {
+  await recordPromptPerformance('generation.v2', studentId, sessionId, turn.turnNumber, {
     studentEngagement: turn.studentMessage.length > 50 ? 0.8 : 0.5,
     masterySignal: masterySignal === 'strong',
     shameSpike: perception.emotionalSignals.shamePotential > 0.7,
@@ -382,4 +429,27 @@ async function queueNotification(studentId: string, type: string, content: strin
      ON CONFLICT (dedupe_key) DO NOTHING`,
     [studentId, type, content, dedupeKey]
   ).catch(() => {});
+}
+
+function inferSubjectFromGoal(goal: string | null | undefined): string | null {
+  if (!goal) return null;
+  const g = goal.toLowerCase();
+  if (/anatomy|medicine|surgery|biology|physio|mbbs|nursing/.test(g)) return 'biology';
+  if (/physics|engineering/.test(g)) return 'physics';
+  if (/chem/.test(g)) return 'chemistry';
+  if (/math|calcul|algebra/.test(g)) return 'mathematics';
+  if (/econ|account|commerce/.test(g)) return 'economics';
+  if (/english|lit/.test(g)) return 'english';
+  return null;
+}
+
+function firstConceptForSubject(subject: string | null | undefined): string | null {
+  const s = (subject || '').toLowerCase();
+  if (s === 'biology') return 'cells_and_tissues';
+  if (s === 'physics') return 'measurement_and_units';
+  if (s === 'chemistry') return 'matter_and_particles';
+  if (s === 'mathematics') return 'numbers_and_operations';
+  if (s === 'english') return 'sentence_basics';
+  if (s === 'economics') return 'basic_economic_problems';
+  return s && s !== 'general' ? `${s}_foundations` : null;
 }

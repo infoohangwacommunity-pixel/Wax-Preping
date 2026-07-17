@@ -131,6 +131,47 @@ function checkCulturalSafety(response: string): DefenseResult {
   };
 }
 
+/** Catches robotic onboarding scripts and interrogation-style multi-question turns. */
+function checkHumanTeachingVoice(response: string): DefenseResult {
+  const robotic = [
+    /welcome to our tutoring sessions/i,
+    /i'?m super excited to have you on board/i,
+    /as an ai\b/i,
+    /i'?d be happy to help/i,
+    /certainly[!.,]/i,
+    /great question[!.,]/i,
+  ];
+  const questionMarks = (response.match(/\?/g) || []).length;
+  const roboticHit = robotic.some(p => p.test(response));
+  const multiQuestion = questionMarks >= 2;
+
+  if (roboticHit) {
+    return {
+      passes: false,
+      severity: 'high',
+      issue: 'Response uses robotic onboarding / stock chatbot phrasing',
+      suggestedFix: 'Rewrite as a natural WhatsApp tutor message. No welcome scripts. Teach or connect like a human.',
+      layerName: 'human_teaching_voice',
+    };
+  }
+  if (multiQuestion) {
+    return {
+      passes: false,
+      severity: 'medium',
+      issue: 'Response asks multiple questions in one turn (interrogation pattern)',
+      suggestedFix: 'Keep at most one question. Prefer teaching a micro-chunk over interviewing.',
+      layerName: 'human_teaching_voice',
+    };
+  }
+  return {
+    passes: true,
+    severity: 'low',
+    issue: '',
+    suggestedFix: '',
+    layerName: 'human_teaching_voice',
+  };
+}
+
 async function autoFixResponse(originalResponse: string, issue: DefenseResult, studentId?: string): Promise<string> {
   try {
     const editorPrompt = await getPrompt('defense_autofix.v1');
@@ -164,6 +205,7 @@ export async function runDefenseChecks(
     { run: r => checkEmotionalSafety(r) },
     { run: (r, sm) => checkPedagogicalIntegrity(sm, r) },
     { run: r => checkCulturalSafety(r) },
+    { run: r => checkHumanTeachingVoice(r) },
   ];
 
   for (const check of checks) {

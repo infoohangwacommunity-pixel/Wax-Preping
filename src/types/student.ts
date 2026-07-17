@@ -260,4 +260,12 @@ export interface SessionState {
   lastStrategy: string | null;
   bloomLevel: BloomLevel | null;
   unresolvedQuestion: string | null;
+  /** Anti-interrogation accounting (v2.1 teach-first policy). */
+  consecutiveQuestions: number;
+  questionsThisSession: number;
+  lastTutorAskedQuestion: boolean;
+  turnsSinceLastTeach: number;
+  lastMove: string | null;
+  readinessSignal: boolean;
+  foundationGapDisclosed: boolean;
 }
