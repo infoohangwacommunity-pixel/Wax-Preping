@@ -1,98 +1,64 @@
 /**
- * Hierarchical student dossier — compresses profile + facts + mastery into a
- * ranked context block for deliberation.
- *
- * Layers (inspired by hierarchical memory / MemGPT-style paging, specialized
- * for tutoring):
- *   L0 identity   — who they are (facts, goals)
- *   L1 trajectory — exams, foundation, study habits
- *   L2 mastery    — top weak / strong concepts (BKT scalars)
- *   L3 narrative  — short memory-block slices
- *   L4 session    — live session state
- *
- * Ranking is importance × recency × educational utility — not raw dump.
+ * Student dossier — hierarchical memory summary.
+ * v3.0: Now incorporates dynamic attributes from student_attributes table
+ * alongside the static memory blocks.
  */
+import { getStudentProfile } from './semantic';
+import { getActiveAttributes } from '../student_profile/attribute_pipeline';
+import type { StudentProfile, MemoryBlocks } from '../types/student';
 
-import type { StudentProfile, SessionState } from '../types/student';
-import { masteryBand } from '../teaching/bkt';
+export function buildStudentDossier(profile: StudentProfile, sessionState: Record<string, unknown>): string {
+  const blocks = profile.memoryBlocks;
+  const recentConcepts = sessionState.conceptsVisitedThisSession as string[] || [];
+  const currentConcept = sessionState.currentConcept as string | null;
 
-export interface DossierOptions {
-  maxChars?: number;
+  const lines: string[] = [
+    `STUDENT DOSSIER`,
+    `---`,
+    `Profile: ${blocks.humanProfile}`,
+    `Learning style: ${blocks.learningStyle}`,
+    `Progress: ${blocks.progress}`,
+    `Shame triggers: ${blocks.shameMap}`,
+    `Curiosity hooks: ${blocks.curiosityMap}`,
+    `Exam strategy: ${blocks.examStrategy}`,
+    `Error patterns: ${blocks.errorPatterns}`,
+    `Breakthroughs: ${blocks.breakthroughs}`,
+    `Procedural notes: ${blocks.procedural}`,
+    `---`,
+    `Current concept: ${currentConcept || 'none'}`,
+    `Concepts this session: ${recentConcepts.join(', ') || 'none'}`,
+    `Study streak: ${profile.studyStreak} days`,
+    `Total turns: ${profile.totalTurns}`,
+  ];
+
+  if (profile.examTargets.length > 0) {
+    lines.push(`Exam targets: ${profile.examTargets.map(e => `${e.examType} (${e.subjects?.join(', ')})`).join('; ')}`);
+  }
+
+  return lines.join('\n');
 }
 
-export function buildStudentDossier(
-  profile: StudentProfile,
-  session: SessionState,
-  options: DossierOptions = {}
-): string {
-  const maxChars = options.maxChars ?? 1800;
-  const parts: string[] = [];
+/**
+ * Build a dossier that includes dynamic attributes.
+ * Called by the crew when assembling context.
+ */
+export async function buildDynamicDossier(studentId: string, sessionState: Record<string, unknown>): Promise<string> {
+  const [profile, attributes] = await Promise.all([
+    getStudentProfile(studentId),
+    getActiveAttributes(studentId).catch(() => ({})),
+  ]);
 
-  // L0 — identity facts
-  const facts = Object.entries(profile.facts || {})
-    .sort((a, b) => (b[1].confidence || 0) - (a[1].confidence || 0))
-    .slice(0, 12)
-    .map(([k, v]) => `${k}=${v.factValue}`)
-    .join('; ');
-  if (facts) parts.push(`IDENTITY FACTS: ${facts}`);
-  else parts.push('IDENTITY FACTS: none yet — infer carefully, do not re-interview endlessly.');
+  const base = buildStudentDossier(profile, sessionState);
 
-  // L1 — trajectory
-  const exams = (profile.examTargets || [])
-    .map(e => `${e.examType}${e.examDate ? `@${e.examDate}` : ''}[${(e.subjects || []).join(',')}]`)
-    .join(' | ');
-  parts.push(
-    `TRAJECTORY: turns=${profile.totalTurns} sessions=${profile.totalSessions} streak=${profile.studyStreak}` +
-      (exams ? ` exams=${exams}` : '')
-  );
+  if (Object.keys(attributes).length === 0) return base;
 
-  // L2 — mastery snapshot
-  const concepts = Object.values(profile.conceptProgress || {});
-  const weak = concepts
-    .filter(c => c.masteryLevel < 0.5)
-    .sort((a, b) => a.masteryLevel - b.masteryLevel)
-    .slice(0, 5)
-    .map(c => `${c.conceptName}:${c.masteryLevel.toFixed(2)}(${masteryBand(c.masteryLevel)})`);
-  const strong = concepts
-    .filter(c => c.masteryLevel >= 0.7)
-    .sort((a, b) => b.masteryLevel - a.masteryLevel)
-    .slice(0, 4)
-    .map(c => `${c.conceptName}:${c.masteryLevel.toFixed(2)}`);
-  if (weak.length) parts.push(`WEAK CONCEPTS: ${weak.join('; ')}`);
-  if (strong.length) parts.push(`STRONG CONCEPTS: ${strong.join('; ')}`);
-  if (!weak.length && !strong.length) parts.push('MASTERY: no concept evidence yet.');
+  const attrLines = Object.entries(attributes)
+    .slice(0, 15)
+    .map(([key, val]) => {
+      const v = typeof val === 'object' && val !== null ? (val as Record<string, unknown>).value : val;
+      const c = typeof val === 'object' && val !== null ? (val as Record<string, unknown>).confidence : null;
+      return `  ${key}: ${JSON.stringify(v)}${c !== null ? ` (conf: ${(c as number).toFixed(2)})` : ''}`;
+    });
 
-  // L3 — narrative blocks (truncated)
-  const blocks = profile.memoryBlocks || ({} as StudentProfile['memoryBlocks']);
-  const narrativeKeys: (keyof typeof blocks)[] = [
-    'humanProfile',
-    'learningStyle',
-    'progress',
-    'shameMap',
-    'curiosityMap',
-    'errorPatterns',
-    'breakthroughs',
-  ];
-  for (const key of narrativeKeys) {
-    const val = (blocks[key] || '').trim();
-    if (!val || val.length < 8) continue;
-    // Skip pure defaults
-    if (/unknown|nothing known|no concepts covered|no breakthroughs yet/i.test(val) && val.length < 90) continue;
-    parts.push(`${key}: ${val.slice(0, 180)}`);
-  }
-
-  // L4 — session
-  parts.push(
-    `SESSION: subject=${session.currentSubject || 'none'} concept=${session.currentConcept || 'none'} ` +
-      `struggles=${session.struggleCount} qConsec=${session.consecutiveQuestions ?? 0} ` +
-      `qSess=${session.questionsThisSession ?? 0} lastMove=${session.lastMove || 'none'} ` +
-      `ready=${session.readinessSignal ? 'yes' : 'no'} foundationGap=${session.foundationGapDisclosed ? 'yes' : 'no'}`
-  );
-
-  // Rank-trim by keeping head sections first (already ordered by importance)
-  let out = parts.join('\n');
-  if (out.length > maxChars) {
-    out = out.slice(0, maxChars - 20) + '\n…[dossier truncated]';
-  }
-  return out;
+  return `${base}\n\nDYNAMIC ATTRIBUTES:\n${attrLines.join('\n')}`;
 }
