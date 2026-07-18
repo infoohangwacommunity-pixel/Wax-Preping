@@ -6,10 +6,15 @@
  * context assembly: the tutor remembers relevant past moments across
  * sessions. Recall is restricted to the query's embedding provider space
  * (see embeddings.ts) and cross-session by design.
+ * 
+ * v3.0: Also writes episodes to the cognitive graph for temporal knowledge
+ * graph traversal and bi-temporal querying.
  */
 import { db } from '../db/client';
 import { embed } from './embeddings';
 import { logger } from '../middleware/logger';
+import { getGraphAdapter } from '../graph/factory';
+import { autoConstructPalacePath, placeInPalace } from '../palace/organizer';
 import type { ConversationTurn } from '../types/student';
 
 export async function saveEpisode(turn: ConversationTurn): Promise<void> {
@@ -38,6 +43,108 @@ export async function saveEpisode(turn: ConversationTurn): Promise<void> {
       turn.timestamp,
     ]
   );
+
+  // v3.0: Write to cognitive graph
+  try {
+    const graph = await getGraphAdapter();
+    
+    // Ensure student node exists
+    const studentNodes = await graph.searchNodes({ labels: ['Student'], student_id: turn.studentId }, 1);
+    let studentNodeId: string;
+    if (studentNodes.length === 0) {
+      const newStudent = await graph.createNode({
+        labels: ['Student'],
+        properties: { student_id: turn.studentId },
+        student_id: turn.studentId,
+        source: 'system',
+      });
+      studentNodeId = newStudent.id;
+    } else {
+      studentNodeId = studentNodes[0].id;
+    }
+
+    // Create episode node
+    const episodeNode = await graph.createNode({
+      labels: ['Episode'],
+      properties: {
+        turn_id: turn.turnId,
+        student_message: turn.studentMessage,
+        tutor_response: turn.tutorResponse,
+        topic: turn.topic,
+        subject: turn.subject,
+        modality: turn.modality,
+        mastery_evidenced: turn.masteryEvidenced,
+        emotional_valence: turn.aiAnalysis?.emotionalReading?.valence,
+        cognitive_load_estimate: turn.aiAnalysis?.cognitiveLoad ? parseInt(turn.aiAnalysis.cognitiveLoad as string) : undefined,
+      },
+      embedding: vector,
+      event_time: new Date(turn.timestamp),
+      student_id: turn.studentId,
+      source: 'whatsapp',
+    });
+
+    // Link student to episode
+    await graph.createEdge({
+      source_id: studentNodeId,
+      target_id: episodeNode.id,
+      type: 'PARTICIPATED_IN',
+      student_id: turn.studentId,
+    });
+
+    // Link to previous episode in same session (episodic sequential)
+    const prevResult = await db.query(
+      `SELECT turn_id FROM conversation_turns 
+       WHERE session_id = $1 AND turn_number = $2
+       LIMIT 1`,
+      [turn.sessionId, turn.turnNumber - 1]
+    );
+
+    if (prevResult.rows.length > 0) {
+      const prevTurnId = prevResult.rows[0].turn_id;
+      const prevNodes = await graph.searchNodes({ labels: ['Episode'], turn_id: prevTurnId }, 1);
+      if (prevNodes.length > 0) {
+        await graph.createEdge({
+          source_id: prevNodes[0].id,
+          target_id: episodeNode.id,
+          type: 'EPISODIC_SEQUENTIAL',
+          properties: { order: turn.turnNumber },
+          student_id: turn.studentId,
+        });
+      }
+    }
+
+    // Place in memory palace
+    if (turn.subject && turn.topic) {
+      try {
+        const { drawer } = await autoConstructPalacePath(turn.studentId, turn.subject, turn.topic, turn.topic);
+        await placeInPalace(drawer.id, episodeNode.id, 'episode');
+      } catch (palaceErr) {
+        logger.debug({ palaceErr }, '[Episodic] Palace placement failed');
+      }
+    }
+
+    // If topic/concept node exists, link episode to it
+    if (turn.topic) {
+      const conceptNodes = await graph.searchNodes({
+        labels: ['Concept'],
+        student_id: turn.studentId,
+        name: turn.topic,
+      }, 1);
+
+      if (conceptNodes.length > 0) {
+        await graph.createEdge({
+          source_id: episodeNode.id,
+          target_id: conceptNodes[0].id,
+          type: 'DISCUSSED',
+          student_id: turn.studentId,
+        });
+      }
+    }
+
+    logger.debug({ turnId: turn.turnId }, '[Episodic] Saved to graph');
+  } catch (graphErr) {
+    logger.debug({ graphErr }, '[Episodic] Graph write failed — relational data preserved');
+  }
 }
 
 export async function recallRelevantEpisodes(
