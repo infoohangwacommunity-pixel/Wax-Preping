@@ -38,6 +38,28 @@ export async function markAsRead(phoneNumberId: string, messageId: string): Prom
   } catch { /* not critical */ }
 }
 
+/**
+ * Send a typing indicator to the student.
+ * Use this before long operations (tool calls, LLM calls) to signal activity.
+ */
+export async function sendTypingIndicator(phoneNumberId: string, to: string): Promise<void> {
+  try {
+    await axios.post(
+      `${WA_BASE}/${phoneNumberId}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to,
+        type: 'text',
+        text: { body: '...', preview_url: false },
+      },
+      { headers: headers(), timeout: 5_000 }
+    );
+  } catch {
+    // Typing indicators are best-effort; failures are non-critical
+  }
+}
+
 function chunkText(text: string, maxLen: number): string[] {
   if (text.length <= maxLen) return [text];
   const chunks: string[] = [];
