@@ -51,7 +51,6 @@ function bktFromResult(
 
   const pLearnedGivenEvidence = numerator / (denominator || 1);
 
-  // Probability of knowing it next time = learned now + (not learned now * transition)
   return pLearnedGivenEvidence + (1 - pLearnedGivenEvidence) * pT;
 }
 
@@ -142,7 +141,6 @@ export async function getStudentProfile(studentId: string): Promise<StudentProfi
       facts: {},
     };
 
-    // Hydrate facts from student_facts table
     const factsResult = await db.query(
       `SELECT fact_key, fact_value, confidence, source, updated_at FROM student_facts WHERE student_id = $1`,
       [studentId]
@@ -250,7 +248,6 @@ export async function upsertStudentFact(
   try {
     const graph = await getGraphAdapter();
     
-    // Ensure student node exists
     const studentNodes = await graph.searchNodes({ labels: ['Student'], student_id: studentId }, 1);
     let studentNodeId: string;
     if (studentNodes.length === 0) {
@@ -265,7 +262,6 @@ export async function upsertStudentFact(
       studentNodeId = studentNodes[0].id;
     }
 
-    // Check for existing fact with same key
     const existingFacts = await graph.searchNodes({
       labels: ['Fact'],
       student_id: studentId,
@@ -273,7 +269,6 @@ export async function upsertStudentFact(
     }, 1);
 
     if (existingFacts.length > 0) {
-      // Update existing fact and invalidate old one
       const oldFact = existingFacts[0];
       await graph.updateNode(oldFact.id, {
         validity_window: [oldFact.event_time, new Date()],
@@ -288,7 +283,6 @@ export async function upsertStudentFact(
       });
     }
 
-    // Create new fact node
     const factNode = await graph.createNode({
       labels: ['Fact'],
       properties: {
@@ -315,12 +309,6 @@ export async function upsertStudentFact(
   }
 }
 
-/**
- * Evidence-based mastery update (BKT-inspired).
- * Each turn contributes one observation; mastery moves toward the evidence
- * with asymmetric step sizes — mastery is easier to lose than to gain at the
- * top, which matches how teachers actually calibrate confidence.
- */
 export async function updateConceptEvidence(
   studentId: string,
   concept: string,
@@ -360,8 +348,6 @@ export async function updateConceptEvidence(
     existing.bloomLevel = bloomLevel;
   }
 
-  // True BKT update (Corbett & Anderson) — masteryLevel is P(learned)
-  // Per-concept params when available (learned from knowledge_trace_events)
   const pBefore = existing.masteryLevel || DEFAULT_BKT.pL0;
   let params = DEFAULT_BKT;
   try { params = await getConceptBktParams(existing.conceptId || concept); } catch { /* defaults */ }
@@ -398,7 +384,6 @@ export async function updateConceptEvidence(
     }, 1);
 
     if (conceptNodes.length > 0) {
-      // Update existing concept
       await graph.updateNode(conceptNodes[0].id, {
         properties: {
           ...conceptNodes[0].properties,
@@ -410,7 +395,6 @@ export async function updateConceptEvidence(
         },
       });
     } else {
-      // Create new concept node
       const studentNodes = await graph.searchNodes({ labels: ['Student'], student_id: studentId }, 1);
       let studentNodeId: string;
       if (studentNodes.length === 0) {
@@ -441,4 +425,258 @@ export async function updateConceptEvidence(
 
       await graph.createEdge({
         source_id: studentNodeId,
-        target
+        target_id: newConcept.id,
+        type: 'HAS_MASTERY',
+        properties: {
+          probability: existing.masteryLevel,
+          updated_at: new Date().toISOString(),
+        },
+        student_id: studentId,
+      });
+    }
+
+    logger.debug({ studentId, concept, mastery: existing.masteryLevel }, '[Semantic] Concept saved to graph');
+  } catch (graphErr) {
+    logger.debug({ graphErr }, '[Semantic] Graph write failed — relational data preserved');
+  }
+
+  invalidateProfileCache(studentId);
+  return existing;
+}
+
+export async function recordBreakthrough(
+  studentId: string,
+  concept: string,
+  details: string
+): Promise<void> {
+  const profile = await getStudentProfile(studentId);
+  const blocks = { ...profile.memoryBlocks };
+  blocks.breakthroughs = (blocks.breakthroughs || '') + '\n' + details;
+  await applyMemoryEdit(studentId, 'breakthroughs', 'replace', blocks.breakthroughs);
+
+  // v3.0: Create breakthrough episode node in graph
+  try {
+    const graph = await getGraphAdapter();
+    const episodeNode = await graph.createNode({
+      labels: ['Episode', 'Breakthrough'],
+      properties: {
+        concept,
+        details,
+        emotional_valence: 0.9,
+        breakthrough: true,
+      },
+      student_id: studentId,
+      source: 'breakthrough_recorder',
+    });
+
+    const studentNodes = await graph.searchNodes({ labels: ['Student'], student_id: studentId }, 1);
+    if (studentNodes.length > 0) {
+      await graph.createEdge({
+        source_id: studentNodes[0].id,
+        target_id: episodeNode.id,
+        type: 'PARTICIPATED_IN',
+        student_id: studentId,
+      });
+    }
+  } catch (graphErr) {
+    logger.debug({ graphErr }, '[Semantic] Breakthrough graph write failed');
+  }
+}
+
+export async function recordErrorPattern(
+  studentId: string,
+  concept: string,
+  error: string
+): Promise<void> {
+  const profile = await getStudentProfile(studentId);
+  const diary = [...(profile.errorDiary || [])];
+  diary.push({
+    concept,
+    error,
+    timestamp: new Date().toISOString(),
+    corrected: false,
+  });
+  if (diary.length > 20) diary.shift();
+
+  await db.query(
+    `UPDATE student_profiles SET error_diary = $1 WHERE student_id = $2`,
+    [JSON.stringify(diary), studentId]
+  );
+
+  const blocks = { ...profile.memoryBlocks };
+  blocks.errorPatterns = (blocks.errorPatterns || '') + `\n[${concept}] ${error}`;
+  await applyMemoryEdit(studentId, 'errorPatterns', 'replace', blocks.errorPatterns);
+
+  // v3.0: Create mistake pattern in graph
+  try {
+    const graph = await getGraphAdapter();
+    const mistakeNode = await graph.createNode({
+      labels: ['Episode', 'Mistake'],
+      properties: {
+        concept,
+        error,
+        emotional_valence: -0.5,
+        mistake: true,
+      },
+      student_id: studentId,
+      source: 'error_recorder',
+    });
+
+    const studentNodes = await graph.searchNodes({ labels: ['Student'], student_id: studentId }, 1);
+    if (studentNodes.length > 0) {
+      await graph.createEdge({
+        source_id: studentNodes[0].id,
+        target_id: mistakeNode.id,
+        type: 'PARTICIPATED_IN',
+        student_id: studentId,
+      });
+    }
+
+    const conceptNodes = await graph.searchNodes({
+      labels: ['Concept'],
+      student_id: studentId,
+      name: concept,
+    }, 1);
+
+    if (conceptNodes.length > 0) {
+      await graph.createEdge({
+        source_id: mistakeNode.id,
+        target_id: conceptNodes[0].id,
+        type: 'MISTAKE_ON',
+        student_id: studentId,
+      });
+    }
+  } catch (graphErr) {
+    logger.debug({ graphErr }, '[Semantic] Error pattern graph write failed');
+  }
+
+  invalidateProfileCache(studentId);
+}
+
+export async function recordAnalogy(
+  studentId: string,
+  concept: string,
+  analogy: string
+): Promise<void> {
+  const profile = await getStudentProfile(studentId);
+  const library = [...(profile.analogyLibrary || [])];
+  library.push({
+    concept,
+    analogy,
+    timestamp: new Date().toISOString(),
+  });
+  if (library.length > 50) library.shift();
+
+  await db.query(
+    `UPDATE student_profiles SET analogy_library = $1 WHERE student_id = $2`,
+    [JSON.stringify(library), studentId]
+  );
+
+  // v3.0: Store analogy as fact in graph
+  try {
+    const graph = await getGraphAdapter();
+    const analogyNode = await graph.createNode({
+      labels: ['Fact'],
+      properties: {
+        attribute_key: `analogy_${concept}`,
+        attribute_value: analogy,
+        concept,
+        confidence: 0.8,
+        category: 'cognitive_preference',
+      },
+      student_id: studentId,
+      source: 'analogy_recorder',
+    });
+
+    const studentNodes = await graph.searchNodes({ labels: ['Student'], student_id: studentId }, 1);
+    if (studentNodes.length > 0) {
+      await graph.createEdge({
+        source_id: studentNodes[0].id,
+        target_id: analogyNode.id,
+        type: 'HAS_FACT',
+        student_id: studentId,
+      });
+    }
+  } catch (graphErr) {
+    logger.debug({ graphErr }, '[Semantic] Analogy graph write failed');
+  }
+
+  invalidateProfileCache(studentId);
+}
+
+export async function updateStudyStreak(studentId: string): Promise<void> {
+  const profile = await getStudentProfile(studentId);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  if (!profile.lastStudyDate) {
+    await db.query(
+      `UPDATE student_profiles SET study_streak = 1, last_study_date = $1 WHERE student_id = $2`,
+      [today.toISOString(), studentId]
+    );
+    invalidateProfileCache(studentId);
+    return;
+  }
+
+  const lastDate = new Date(profile.lastStudyDate);
+  lastDate.setHours(0, 0, 0, 0);
+  const diffDays = Math.floor((today.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
+
+  let newStreak = profile.studyStreak;
+  if (diffDays === 1) {
+    newStreak += 1;
+  } else if (diffDays > 1) {
+    newStreak = 1;
+  }
+
+  if (diffDays >= 1) {
+    await db.query(
+      `UPDATE student_profiles SET study_streak = $1, last_study_date = $2 WHERE student_id = $3`,
+      [newStreak, today.toISOString(), studentId]
+    );
+    invalidateProfileCache(studentId);
+  }
+}
+
+export async function updateExamTargets(
+  studentId: string,
+  targets: Array<{ exam: string; date: string; subjects: string[] }>
+): Promise<void> {
+  await db.query(
+    `UPDATE student_profiles SET exam_targets = $1 WHERE student_id = $2`,
+    [JSON.stringify(targets), studentId]
+  );
+  invalidateProfileCache(studentId);
+}
+
+export async function updateCulturalContext(
+  studentId: string,
+  context: Record<string, unknown>
+): Promise<void> {
+  const profile = await getStudentProfile(studentId);
+  const merged = { ...profile.culturalContext, ...context };
+  await db.query(
+    `UPDATE student_profiles SET cultural_context = $1 WHERE student_id = $2`,
+    [JSON.stringify(merged), studentId]
+  );
+  invalidateProfileCache(studentId);
+}
+
+export async function getSymbolicKnowledge(studentId: string): Promise<Record<string, SymbolicBelief>> {
+  const result = await db.query(
+    `SELECT symbolic_knowledge FROM student_profiles WHERE student_id = $1`,
+    [studentId]
+  );
+  return (result.rows[0]?.symbolic_knowledge as Record<string, SymbolicBelief>) || {};
+}
+
+export async function updateSymbolicKnowledge(
+  studentId: string,
+  beliefs: Record<string, SymbolicBelief>
+): Promise<void> {
+  await db.query(
+    `UPDATE student_profiles SET symbolic_knowledge = $1 WHERE student_id = $2`,
+    [JSON.stringify(beliefs), studentId]
+  );
+  invalidateProfileCache(studentId);
+}
