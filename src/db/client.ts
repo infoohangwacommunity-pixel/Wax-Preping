@@ -1,36 +1,21 @@
 /**
- * PostgreSQL client + schema v3.
- *
- * Schema changes vs v2 (all additive and migration-safe — CREATE IF NOT EXISTS
- * and ALTER ... IF NOT EXISTS only):
- * - v2: sessions state JSONB, embedding_provider, student_facts, dedupe_key, purpose.
- * - v3: student_attributes (dynamic learner model), student_archetypes (clustering),
- *   syllabus_chunks (vector store), tools (dynamic registry), observability logs,
- *   onboarding_state (goal-driven discovery).
+ * Database client with idempotent schema initialization.
+ * Extended for v3.0 cognitive architecture.
  */
 import { Pool } from 'pg';
 import { logger } from '../middleware/logger';
 
 export const db = new Pool({
   connectionString: process.env.DATABASE_URL,
-  max: 20,
-  idleTimeoutMillis: 30_000,
-  connectionTimeoutMillis: 5_000,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
 
 export async function initializeDatabase(): Promise<void> {
+  // Core extensions
   await db.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`);
   await db.query(`CREATE EXTENSION IF NOT EXISTS vector`);
 
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS system_config (
-      key TEXT PRIMARY KEY,
-      content TEXT NOT NULL,
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `);
-
+  // Sessions (v2: +state JSONB for persistent per-session teaching state)
   await db.query(`
     CREATE TABLE IF NOT EXISTS sessions (
       session_id TEXT PRIMARY KEY,
@@ -40,11 +25,13 @@ export async function initializeDatabase(): Promise<void> {
       turn_count INT DEFAULT 0,
       is_active BOOLEAN DEFAULT TRUE,
       state JSONB DEFAULT '{}'::JSONB
-    )
+    );
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS state JSONB DEFAULT '{}'::JSONB;
+    CREATE INDEX IF NOT EXISTS sessions_student_id_idx ON sessions (student_id);
+    CREATE INDEX IF NOT EXISTS sessions_last_activity_idx ON sessions (last_activity_at);
   `);
-  await db.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS state JSONB DEFAULT '{}'::JSONB`);
-  await db.query(`CREATE INDEX IF NOT EXISTS sessions_student_idx ON sessions(student_id)`);
 
+  // Conversation turns / episodic memory (v2: +embedding_provider)
   await db.query(`
     CREATE TABLE IF NOT EXISTS conversation_turns (
       turn_id TEXT PRIMARY KEY,
@@ -68,21 +55,13 @@ export async function initializeDatabase(): Promise<void> {
       mastery_evidenced BOOLEAN DEFAULT FALSE,
       reflection_score FLOAT,
       timestamp TIMESTAMPTZ DEFAULT NOW()
-    )
+    );
+    ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS embedding_provider TEXT;
+    CREATE INDEX IF NOT EXISTS turns_student_id_idx ON conversation_turns (student_id);
+    CREATE INDEX IF NOT EXISTS turns_session_id_idx ON conversation_turns (session_id);
   `);
-  await db.query(`ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS embedding_provider TEXT`);
-  await db.query(`CREATE INDEX IF NOT EXISTS turns_student_idx ON conversation_turns(student_id)`);
-  await db.query(`CREATE INDEX IF NOT EXISTS turns_session_idx ON conversation_turns(session_id)`);
-  await db.query(`CREATE INDEX IF NOT EXISTS turns_timestamp_idx ON conversation_turns(timestamp DESC)`);
 
-  try {
-    await db.query(`
-      CREATE INDEX IF NOT EXISTS turns_embedding_idx
-      ON conversation_turns USING ivfflat (embedding vector_cosine_ops)
-      WITH (lists = 100)
-    `);
-  } catch { /* ivfflat needs rows first */ }
-
+  // Student profiles (semantic + procedural memory)
   await db.query(`
     CREATE TABLE IF NOT EXISTS student_profiles (
       student_id TEXT PRIMARY KEY,
@@ -100,26 +79,10 @@ export async function initializeDatabase(): Promise<void> {
       cultural_context JSONB DEFAULT '{}',
       study_plan JSONB,
       symbolic_knowledge JSONB DEFAULT '{}'
-    )
-  `);
-  await db.query(`ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS archetype_id UUID`);
-  await db.query(`ALTER TABLE student_profiles ADD COLUMN IF NOT EXISTS attribute_summary TEXT`);
-
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS student_facts (
-      student_id TEXT NOT NULL,
-      fact_key TEXT NOT NULL,
-      fact_value TEXT NOT NULL,
-      confidence FLOAT DEFAULT 0.7,
-      source TEXT DEFAULT 'conversation',
-      updated_at TIMESTAMPTZ DEFAULT NOW(),
-      PRIMARY KEY (student_id, fact_key)
-    )
+    );
   `);
 
-  // ──────────────────────────────────────────────
-  // v3.0: Dynamic Student Attributes
-  // ──────────────────────────────────────────────
+  // v3.0: student_attributes (dynamic, extensible learner model)
   await db.query(`
     CREATE TABLE IF NOT EXISTS student_attributes (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -140,9 +103,7 @@ export async function initializeDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_student_attributes_confidence ON student_attributes(confidence) WHERE is_active = true;
   `);
 
-  // ──────────────────────────────────────────────
-  // v3.0: Student Archetypes (clustering)
-  // ──────────────────────────────────────────────
+  // v3.0: student_archetypes (clustering)
   await db.query(`
     CREATE TABLE IF NOT EXISTS student_archetypes (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -166,9 +127,7 @@ export async function initializeDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_archetype_memberships_student ON student_archetype_memberships(student_id);
   `);
 
-  // ──────────────────────────────────────────────
-  // v3.0: Syllabus Vector Store
-  // ──────────────────────────────────────────────
+  // v3.0: syllabus_chunks (replaces JSON packs)
   await db.query(`
     CREATE TABLE IF NOT EXISTS syllabus_chunks (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -191,9 +150,7 @@ export async function initializeDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_syllabus_exam_board ON syllabus_chunks(exam_board);
   `);
 
-  // ──────────────────────────────────────────────
-  // v3.0: Dynamic Tool Registry
-  // ──────────────────────────────────────────────
+  // v3.0: tools (dynamic registry)
   await db.query(`
     CREATE TABLE IF NOT EXISTS tools (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -209,9 +166,7 @@ export async function initializeDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_tools_enabled ON tools(is_enabled);
   `);
 
-  // ──────────────────────────────────────────────
-  // v3.0: Observability Tables
-  // ──────────────────────────────────────────────
+  // v3.0: observability tables
   await db.query(`
     CREATE TABLE IF NOT EXISTS attribute_extraction_logs (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -261,9 +216,7 @@ export async function initializeDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_decision_logs_student ON tutor_decision_logs(student_id);
   `);
 
-  // ──────────────────────────────────────────────
-  // v3.0: Onboarding State
-  // ──────────────────────────────────────────────
+  // v3.0: onboarding_state
   await db.query(`
     CREATE TABLE IF NOT EXISTS onboarding_state (
       student_id TEXT PRIMARY KEY,
@@ -278,6 +231,20 @@ export async function initializeDatabase(): Promise<void> {
     );
   `);
 
+  // Student facts (legacy, preserved for migration)
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS student_facts (
+      student_id TEXT NOT NULL,
+      fact_key TEXT NOT NULL,
+      fact_value TEXT NOT NULL,
+      confidence FLOAT DEFAULT 0.7,
+      source TEXT DEFAULT 'conversation',
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (student_id, fact_key)
+    );
+  `);
+
+  // Notification queue (v2: +dedupe_key UNIQUE)
   await db.query(`
     CREATE TABLE IF NOT EXISTS notification_queue (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -290,144 +257,47 @@ export async function initializeDatabase(): Promise<void> {
       priority INT DEFAULT 5,
       context JSONB DEFAULT '{}',
       dedupe_key TEXT
-    )
-  `);
-  await db.query(`ALTER TABLE notification_queue ADD COLUMN IF NOT EXISTS dedupe_key TEXT`);
-  await db.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS notif_dedupe_idx
-    ON notification_queue(dedupe_key) WHERE dedupe_key IS NOT NULL
-  `);
-  await db.query(`CREATE INDEX IF NOT EXISTS notif_unsent_idx ON notification_queue(sent, scheduled_at) WHERE sent = FALSE`);
-
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS world_model_state (
-      student_id TEXT PRIMARY KEY,
-      predicted_next_mistake TEXT,
-      predicted_forget_concepts TEXT[] DEFAULT '{}',
-      predicted_frustration_probability FLOAT DEFAULT 0,
-      predicted_flow_probability FLOAT DEFAULT 0,
-      predicted_exam_score FLOAT DEFAULT 0,
-      predicted_exam_score_trend TEXT DEFAULT 'stable',
-      model_updated_at TIMESTAMPTZ DEFAULT NOW()
-    )
+    );
+    ALTER TABLE notification_queue ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS notif_dedupe_idx ON notification_queue(dedupe_key) WHERE dedupe_key IS NOT NULL;
   `);
 
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS spaced_reviews (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      student_id TEXT NOT NULL,
-      concept TEXT NOT NULL,
-      subject TEXT,
-      next_review_at TIMESTAMPTZ NOT NULL,
-      interval_days INT DEFAULT 1,
-      review_count INT DEFAULT 0,
-      mastery_level FLOAT DEFAULT 0,
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-      UNIQUE (student_id, concept)
-    )
-  `);
-  await db.query(`CREATE INDEX IF NOT EXISTS spaced_student_idx ON spaced_reviews(student_id)`);
-  await db.query(`CREATE INDEX IF NOT EXISTS spaced_date_idx ON spaced_reviews(next_review_at)`);
-
+  // Deduplication of inbound WhatsApp messages
   await db.query(`
     CREATE TABLE IF NOT EXISTS processed_messages (
       message_id TEXT PRIMARY KEY,
       processed_at TIMESTAMPTZ DEFAULT NOW()
-    )
+    );
+    CREATE INDEX IF NOT EXISTS processed_messages_time_idx ON processed_messages (processed_at);
   `);
 
+  // v3.0: Migrate existing student_facts into student_attributes
   await db.query(`
-    CREATE TABLE IF NOT EXISTS cost_tracking (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      student_id TEXT NOT NULL,
-      model TEXT NOT NULL,
-      tokens_in INT NOT NULL,
-      tokens_out INT NOT NULL,
-      cost_usd FLOAT NOT NULL,
-      purpose TEXT,
-      timestamp TIMESTAMPTZ DEFAULT NOW()
+    INSERT INTO student_attributes (
+      student_id, attribute_key, attribute_value, confidence, 
+      evidence_json, category, is_active
     )
-  `);
-  await db.query(`ALTER TABLE cost_tracking ADD COLUMN IF NOT EXISTS purpose TEXT`);
+    SELECT 
+      student_id,
+      fact_key,
+      to_jsonb(fact_value),
+      COALESCE(confidence, 0.7),
+      jsonb_build_array(jsonb_build_object('source', COALESCE(source, 'migration'), 'timestamp', NOW())),
+      CASE 
+        WHEN fact_key IN ('intended_course', 'subject_interest', 'exam_type', 'target_school') THEN 'goal'
+        WHEN fact_key IN ('foundation_level', 'study_habit', 'track') THEN 'cognitive_preference'
+        ELSE 'contextual_factor'
+      END,
+      CASE WHEN COALESCE(confidence, 0.7) >= 0.6 THEN true ELSE false END
+    FROM student_facts
+    ON CONFLICT (student_id, attribute_key) DO NOTHING;
+  `).catch(() => {});
 
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS defense_log (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      student_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      layer TEXT NOT NULL,
-      severity TEXT NOT NULL,
-      issue TEXT,
-      original_response TEXT,
-      revised_response TEXT,
-      was_fixed BOOLEAN DEFAULT FALSE,
-      timestamp TIMESTAMPTZ DEFAULT NOW()
-    )
-  `);
-
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS ai_reflections (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      student_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      turn_number INT NOT NULL,
-      student_message TEXT,
-      tutor_response TEXT,
-      critique TEXT,
-      improvement TEXT,
-      confidence_score FLOAT,
-      would_do_differently TEXT,
-      timestamp TIMESTAMPTZ DEFAULT NOW()
-    )
-  `);
-
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS prompt_components (
-      component_id TEXT PRIMARY KEY,
-      content TEXT NOT NULL,
-      weight FLOAT DEFAULT 1.0,
-      priority INT DEFAULT 50,
-      version INT DEFAULT 1,
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `);
-
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS prompt_performance (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      component_id TEXT NOT NULL,
-      student_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      turn_number INT NOT NULL,
-      student_engagement FLOAT DEFAULT 0,
-      mastery_signal BOOLEAN DEFAULT FALSE,
-      shame_spike BOOLEAN DEFAULT FALSE,
-      frustration_spike BOOLEAN DEFAULT FALSE,
-      flow_maintained BOOLEAN DEFAULT FALSE,
-      answer_leak BOOLEAN DEFAULT FALSE,
-      timestamp TIMESTAMPTZ DEFAULT NOW()
-    )
-  `);
-
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS prompt_evolution_log (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      component_id TEXT NOT NULL,
-      old_content TEXT,
-      new_content TEXT,
-      old_fitness FLOAT,
-      new_fitness FLOAT,
-      reason TEXT,
-      timestamp TIMESTAMPTZ DEFAULT NOW()
-    )
-  `);
-
-  // Seed defaults
+  // Seed default archetypes and tools
   await seedDefaultArchetypes();
   await seedDefaultTools();
 
-  logger.info('[DB] Schema v3 initialized');
+  logger.info('[DB] v3.0 schema initialized');
 }
 
 async function seedDefaultArchetypes(): Promise<void> {
@@ -465,7 +335,7 @@ async function seedDefaultArchetypes(): Promise<void> {
        VALUES ($1, $2, $3, false)
        ON CONFLICT DO NOTHING`,
       [a.name, a.description, JSON.stringify(a.config)]
-    );
+    ).catch(() => {});
   }
 }
 
@@ -515,6 +385,6 @@ async function seedDefaultTools(): Promise<void> {
        VALUES ($1, $2, $3, $4, true)
        ON CONFLICT (name) DO NOTHING`,
       [t.name, t.description, JSON.stringify(t.input_schema), t.handler_module]
-    );
+    ).catch(() => {});
   }
 }
