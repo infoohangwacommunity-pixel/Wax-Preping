@@ -12,11 +12,7 @@
     "notifications": "node dist/workers/notification_worker.js",
     "evolve": "node dist/workers/prompt_evolution_worker.js",
     "spaced-rep": "node dist/workers/spaced_repetition.js",
-    "compress": "node dist/workers/memory_compressor.js",
-    "simulate:policy": "tsx scripts/simulate_policy.ts",
-    "simulate:phase2": "tsx scripts/simulate_phase2.ts",
-    "simulate:phase3": "tsx scripts/simulate_phase3.ts",
-    "curriculum:ingest": "tsx -e \"require('./src/curriculum/ingest').ingestPackDirectory().then(r=>console.log(r))\""
+    "compress": "node dist/workers/memory_compressor.js"
   },
   "dependencies": {
     "express": "^4.19.2",
@@ -33,7 +29,8 @@
     "form-data": "^4.0.0",
     "node-cron": "^3.0.3",
     "pino": "^9.3.2",
-    "pino-pretty": "^11.2.1"
+    "pino-pretty": "^11.2.1",
+    "mathjs": "^13.0.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
