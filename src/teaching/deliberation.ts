@@ -2,18 +2,16 @@
  * Deliberation — the teacher's mind.
  *
  * ONE smart-tier call that sees everything (perception, profile, memory,
- * history, recalled episodes, world model, session state) and decides how to
- * teach this turn — then the teach-first policy engine hard-constrains the
- * plan so the model cannot default to endless interrogation.
+ * history, recalled episodes, world model, session state, dynamic attributes,
+ * archetype guidance, and available tools) and decides how to teach this turn.
  *
- * Phase-2: policy engine is a SOFT ADVISOR for the LLM (context + preferred moves).
- * Hard enforcement only for safety-critical student signals (exit, emotional crisis,
- * "I don't know", "I'm ready", consecutive-question budget) so the model stays free
- * to reason while we still prevent interrogation loops.
+ * v3.0: Tool registry is injected dynamically from the database. The LLM knows
+ * exactly which tools are available and can request them in needsTools.
  */
 import { routeAndCall } from '../llm/router';
 import { getPrompt } from '../config/prompts';
 import { logger } from '../middleware/logger';
+import { db } from '../db/client';
 import {
   applyPolicyToPlan,
   decideTeachingPolicy,
@@ -46,6 +44,12 @@ export async function deliberate(ctx: TurnContext): Promise<TeachingPlan> {
 
   try {
     const instruction = await getPrompt('deliberation.v2');
+
+    // v3.0: Fetch available tools from dynamic registry
+    const availableTools = await getEnabledTools().catch(() => []);
+    const toolDescriptions = availableTools.length > 0
+      ? availableTools.map(t => `- ${t.name}: ${t.description}`).join('\n')
+      : 'No tools currently available.';
 
     const signals = detectStudentSignals(perception.rawMessage);
     const situation = [
@@ -81,6 +85,8 @@ export async function deliberate(ctx: TurnContext): Promise<TeachingPlan> {
       `- shame triggers: ${profile.memoryBlocks.shameMap.slice(0, 150)}`,
       Object.keys(profile.facts).length > 0 ? `- facts: ${Object.entries(profile.facts).slice(0, 10).map(([k, v]) => `${k}=${v.factValue}`).join('; ')}` : '',
       profile.examTargets.length > 0 ? `- exams: ${JSON.stringify(profile.examTargets).slice(0, 200)}` : '',
+      `\nAVAILABLE TOOLS (you may request up to 2 in needsTools):`,
+      toolDescriptions,
       `\nCONTEXT:`,
       ctx.conversationHistory ? `Recent conversation:\n${ctx.conversationHistory.slice(-900)}` : 'No conversation yet.',
       ctx.recalledEpisodes ? `\nRELEVANT PAST MOMENTS (other sessions):\n${ctx.recalledEpisodes}` : '',
@@ -105,14 +111,12 @@ export async function deliberate(ctx: TurnContext): Promise<TeachingPlan> {
       ? applyPolicyToPlan(rawPlan, policy)
       : softAdvisePlan(rawPlan, policy);
     constrained.policyMove = policy.move;
-    // Only force mustTeach when hard policy requires it; otherwise trust LLM + soft advise
     if (hardEnforce) {
       constrained.mustTeachContent = policy.mustTeachContent;
       constrained.maxQuestionsThisTurn = policy.maxQuestionsThisTurn;
     } else {
       constrained.mustTeachContent = constrained.mustTeachContent || policy.mustTeachContent;
       constrained.maxQuestionsThisTurn = policy.maxQuestionsThisTurn;
-      // Soft cap: never more than 1 question
       if (constrained.askQuestion && policy.maxQuestionsThisTurn === 0) {
         constrained.askQuestion = false;
         constrained.questionPurpose = 'none';
@@ -123,6 +127,17 @@ export async function deliberate(ctx: TurnContext): Promise<TeachingPlan> {
     logger.warn({ err }, '[Deliberation] Failed — using policy-driven fallback plan');
     return fallbackPlan;
   }
+}
+
+/** v3.0: Fetch enabled tools from the dynamic registry. */
+async function getEnabledTools(): Promise<{ name: string; description: string }[]> {
+  const result = await db.query(
+    `SELECT name, description FROM tools WHERE is_enabled = true ORDER BY name`
+  );
+  return result.rows.map((r: Record<string, unknown>) => ({
+    name: r.name as string,
+    description: r.description as string,
+  }));
 }
 
 function buildFallbackPlan(
@@ -144,7 +159,7 @@ function buildFallbackPlan(
 
   const askQuestion =
     policy.forceAskQuestion === null
-      ? false // default OFF in fallback — teach first
+      ? false
       : policy.forceAskQuestion;
 
   return {
@@ -182,9 +197,6 @@ function normalizePlan(
   fallback: TeachingPlan,
   relationshipStage: TeachingPlan['relationshipStage']
 ): TeachingPlan {
-  // CRITICAL FIX: was `parsed.askQuestion !== false` which forced true whenever
-  // the model omitted the field or returned anything other than explicit false.
-  // Now default to fallback (policy-aware), only true when explicitly true.
   const askQuestion =
     typeof parsed.askQuestion === 'boolean' ? parsed.askQuestion : fallback.askQuestion;
 
@@ -213,16 +225,13 @@ function normalizePlan(
   };
 }
 
-
 function shouldHardEnforce(
   move: string,
   perception: TurnContext['perception'],
   sessionState: TurnContext['sessionState']
 ): boolean {
-  // Hard only when student safety / anti-interrogation is at stake
   if (move === 'wrap_and_invite_back' || move === 'reassurance_only') return true;
   if ((sessionState.consecutiveQuestions || 0) >= 2) return true;
-  // ready / don't know / exit are encoded as teach_micro_chunk or wrap — use message
   const msg = perception.rawMessage || '';
   if (/\b(i'?m|i am|am)\s+ready\b/i.test(msg)) return true;
   if (/\bi\s+don'?t\s+know\b|\bidk\b/i.test(msg)) return true;
@@ -231,7 +240,6 @@ function shouldHardEnforce(
   return false;
 }
 
-/** Soft advisor: prefer strategies / include hints, but do not rewrite the LLM plan wholesale. */
 function softAdvisePlan(plan: TeachingPlan, policy: TeachingPolicy): TeachingPlan {
   let strategy = plan.strategy;
   if (policy.bannedStrategies.includes(strategy) && policy.preferredStrategies.length > 0) {
