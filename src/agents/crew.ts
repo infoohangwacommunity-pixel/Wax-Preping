@@ -46,17 +46,54 @@ import { decideNextTopic, getRecentErrors } from '../navigation/ai_navigator';
 import { searchSyllabus, formatSyllabusContext } from '../syllabus/store';
 
 import type { ConversationTurn, ExamTarget } from '../types/student';
-import type { TurnContext, TurnResult } from '../types/teaching';
+import type { TurnContext, TurnResult, PerceptionResult } from '../types/teaching';
 import type { StudentMessageReceived, TutorResponseGenerated, MasteryDetected, EmotionalAlert, SessionStarted } from '../types/events';
 
 export interface ProcessMessageInput {
   studentId: string;
   rawMessage: string;
   messageId: string;
-  modality: 'text' | 'image' | 'audio' | 'document' | 'video';
+  modality: 'text' | 'image' | 'audio' | 'document';
   isFirstMessage?: boolean;
   mediaId?: string;
   mediaCaption?: string;
+}
+
+/**
+ * Build a valid PerceptionResult for onboarding turns.
+ * Using a typed factory instead of an inline `as` assertion prevents
+ * silent breakage if the interface shape changes.
+ */
+function buildOnboardingPerception(rawMessage: string): PerceptionResult {
+  return {
+    rawMessage,
+    modality: 'text',
+    primaryIntent: 'greeting',
+    inferredTopic: null,
+    inferredSubject: null,
+    hasMisconception: false,
+    misconceptionDescription: null,
+    emotionalSignals: {
+      valence: 0.6,
+      arousal: 0.4,
+      dominance: 0.5,
+      shamePotential: 0.2,
+      curiosity: 0.5,
+      selfEfficacy: 0.5,
+      flowIndicator: 0.3,
+      frustration: 0.2,
+      tiredness: 0.1,
+      excitement: 0.3,
+      dominantEmotion: 'neutral',
+    },
+    urgency: 'normal',
+    cognitiveLoad: 'medium',
+    masterySignal: 'none',
+    languageStyle: 'mixed',
+    temporalPressure: 'none',
+    isRepeatedQuestion: false,
+    repetitionCount: 0,
+  };
 }
 
 export async function processTutorMessage(input: ProcessMessageInput): Promise<string> {
@@ -69,24 +106,7 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
     const onboardingResult = await handleOnboardingTurn(
       studentId,
       rawMessage,
-      {
-        rawMessage,
-        modality,
-        primaryIntent: 'greeting',
-        emotionalSignals: {
-          valence: 0.6, arousal: 0.4, dominance: 0.5,
-          shamePotential: 0.2, curiosity: 0.5, selfEfficacy: 0.5,
-          flowIndicator: 0.3, frustration: 0.2, tiredness: 0.1, excitement: 0.3,
-          dominantEmotion: 'neutral',
-        },
-        urgency: 'normal',
-        cognitiveLoad: 'medium',
-        masterySignal: 'none',
-        languageStyle: 'mixed',
-        temporalPressure: 'none',
-        isRepeatedQuestion: false,
-        repetitionCount: 0,
-      } as import('../types/teaching').PerceptionResult,
+      buildOnboardingPerception(rawMessage),
       input.isFirstMessage || false
     );
 
@@ -104,7 +124,8 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
     getStudentProfile(studentId),
   ]);
 
-  const isFirstMessage = profile.totalTurns === 0;
+  // Data-derived first-message flag (avoids shadowing input.isFirstMessage)
+  const isFirstEverMessage = profile.totalTurns === 0;
 
   if (session.isNewSession) {
     const daysSince = profile.lastSeenAt
@@ -115,14 +136,14 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
       timestamp: new Date(), isReturningStudent: profile.totalTurns > 0,
       daysSinceLastSession: profile.totalTurns > 0 ? daysSince : null,
     };
-    eventBus.publish(ev).catch(() => {});
+    eventBus.publish(ev).catch(err => logger.warn({ err }, '[Crew] EventBus publish failed (session.started)'));
   }
 
   const msgEvent: StudentMessageReceived = {
     id: uuidv4(), type: 'student.message.received', studentId, sessionId,
-    timestamp: new Date(), modality, isFirstMessage,
+    timestamp: new Date(), modality, isFirstMessage: isFirstEverMessage,
   };
-  eventBus.publish(msgEvent).catch(() => {});
+  eventBus.publish(msgEvent).catch(err => logger.warn({ err }, '[Crew] EventBus publish failed (student.message.received)'));
 
   await updateStudyStreak(studentId);
 
@@ -138,13 +159,22 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
       urgency: perception.urgency === 'critical' ? 'immediate' : 'monitor',
       recommendedAction: 'Deliberation informed — prioritize emotional safety this turn',
     };
-    eventBus.publish(alert).catch(() => {});
+    eventBus.publish(alert).catch(err => logger.warn({ err }, '[Crew] EventBus publish failed (emotional.alert)'));
   }
 
   // ── 3. Dynamic Attribute Context (v3.0) ─────────────────────────────────
-  const activeAttributes = await getActiveAttributes(studentId).catch(() => ({}));
-  const attributeContext = await buildAttributeContext(studentId).catch(() => 'No learner model yet.');
-  const archetypeModifier = await getArchetypePromptModifier(studentId).catch(() => '');
+  const activeAttributes = await getActiveAttributes(studentId).catch(err => {
+    logger.warn({ err }, '[Crew] getActiveAttributes failed');
+    return {};
+  });
+  const attributeContext = await buildAttributeContext(studentId).catch(err => {
+    logger.warn({ err }, '[Crew] buildAttributeContext failed');
+    return 'No learner model yet.';
+  });
+  const archetypeModifier = await getArchetypePromptModifier(studentId).catch(err => {
+    logger.warn({ err }, '[Crew] getArchetypePromptModifier failed');
+    return '';
+  });
 
   // ── 4. Context assembly (all in parallel) ───────────────────────────────
   const workingMemory = buildWorkingMemory(history, session.state);
@@ -153,12 +183,30 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
   const currentSubject = perception.inferredSubject || session.state.currentSubject || 'general';
 
   const [recalled, dueReviews, reflectionSummary, worldModel, subjectPedagogy, recentErrors] = await Promise.all([
-    recallRelevantEpisodes(studentId, perception.rawMessage, 4, sessionId).catch(() => []),
-    getDueReviews(studentId).catch(() => []),
-    getReflectionSummary(studentId).catch(() => ''),
-    getWorldModelState(studentId).catch(() => null),
-    getSubjectPedagogy(currentSubject).catch(() => null),
-    getRecentErrors(studentId, 3).catch(() => []),
+    recallRelevantEpisodes(studentId, perception.rawMessage, 4, sessionId).catch(err => {
+      logger.warn({ err }, '[Crew] recallRelevantEpisodes failed');
+      return [];
+    }),
+    getDueReviews(studentId).catch(err => {
+      logger.warn({ err }, '[Crew] getDueReviews failed');
+      return [];
+    }),
+    getReflectionSummary(studentId).catch(err => {
+      logger.warn({ err }, '[Crew] getReflectionSummary failed');
+      return '';
+    }),
+    getWorldModelState(studentId).catch(err => {
+      logger.warn({ err }, '[Crew] getWorldModelState failed');
+      return null;
+    }),
+    getSubjectPedagogy(currentSubject).catch(err => {
+      logger.warn({ err }, '[Crew] getSubjectPedagogy failed');
+      return null;
+    }),
+    getRecentErrors(studentId, 3).catch(err => {
+      logger.warn({ err }, '[Crew] getRecentErrors failed');
+      return [];
+    }),
   ]);
 
   // v3.0: Syllabus query for current topic
@@ -168,7 +216,10 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
       query: currentConcept,
       subject: currentSubject !== 'general' ? currentSubject : undefined,
       limit: 3,
-    }).catch(() => []);
+    }).catch(err => {
+      logger.warn({ err }, '[Crew] searchSyllabus failed');
+      return [];
+    });
     syllabusContext = formatSyllabusContext(syllabusResults);
   }
 
@@ -202,7 +253,7 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
     studentId,
     sessionId,
     messageId: input.messageId,
-    isFirstMessage,
+    isFirstMessage: isFirstEverMessage,
     profile,
     sessionState: session.state,
     workingMemory,
@@ -235,7 +286,10 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
         curiosity: perception.emotionalSignals.curiosity,
         selfEfficacy: perception.emotionalSignals.selfEfficacy,
       },
-    }).catch(() => null);
+    }).catch(err => {
+      logger.warn({ err }, '[Crew] decideNextTopic failed');
+      return null;
+    });
 
     if (navigationDecision?.nextTopic) {
       ctx.sessionState.currentConcept = navigationDecision.nextTopic;
@@ -263,26 +317,6 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
       if (result.success && !result.output.startsWith('No ') && !result.output.startsWith('Unknown')) {
         toolResults.push(result.output);
         toolsUsed.push(toolName);
-      }
-    }
-
-    // Auto-create study plan when exam pressure is real
-    if (perception.temporalPressure !== 'none' && !profile.studyPlan) {
-      const nextExam = (profile.examTargets || []).find(
-        (e: ExamTarget) => e.examDate && new Date(e.examDate).getTime() > Date.now()
-      );
-      if (nextExam) {
-        const gaps = Object.entries(profile.conceptProgress || {})
-          .filter(([, v]) => v.masteryLevel < 0.5)
-          .map(([k]) => k)
-          .join(', ');
-        const planResult = await executeToolByName('generate_study_plan', {
-          studentId, subject: nextExam.subjects?.[0] || currentSubject, examDate: nextExam.examDate, conceptGaps: gaps,
-        }, studentId);
-        if (planResult.success && !planResult.output.startsWith('Unknown')) {
-          toolResults.push(planResult.output);
-          toolsUsed.push('generate_study_plan');
-        }
       }
     }
 
@@ -326,7 +360,10 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
   const resolvedSubject = navigationDecision?.nextSubject || currentSubject;
   const resolvedConcept = navigationDecision?.nextTopic || currentConcept || (
     signals.readyToLearn || signals.foundationGap || plan.mustTeachContent
-      ? (await searchSyllabus({ query: perception.rawMessage, subject: resolvedSubject, limit: 1 }).catch(() => []))[0]?.topic || null
+      ? (await searchSyllabus({ query: perception.rawMessage, subject: resolvedSubject, limit: 1 }).catch(err => {
+          logger.warn({ err }, '[Crew] Syllabus fallback search failed');
+          return [];
+        }))[0]?.topic || null
       : null
   );
 
@@ -346,7 +383,7 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
     lastMove: plan.policyMove || plan.strategy,
     readinessSignal: session.state.readinessSignal || signals.readyToLearn,
     foundationGapDisclosed: session.state.foundationGapDisclosed || signals.foundationGap,
-  }).catch(() => {});
+  }).catch(err => logger.error({ err }, '[Crew] CRITICAL: updateSessionState failed'));
 
   // ── 11. Persist the turn ───────────────────────────────────────────────
   const turn: ConversationTurn = {
@@ -379,7 +416,7 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
   };
 
   await saveEpisode(turn).catch(err => logger.warn({ err }, '[Crew] saveEpisode failed'));
-  await touchSession(sessionId).catch(() => {});
+  await touchSession(sessionId).catch(err => logger.warn({ err }, '[Crew] touchSession failed'));
 
   const responseEvent: TutorResponseGenerated = {
     id: uuidv4(), type: 'tutor.response.generated', studentId, sessionId, timestamp: new Date(),
@@ -389,7 +426,7 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
     defenseIssues: defense.issues.map(i => i.issue),
     strategy: plan.strategy,
   };
-  eventBus.publish(responseEvent).catch(() => {});
+  eventBus.publish(responseEvent).catch(err => logger.warn({ err }, '[Crew] EventBus publish failed (tutor.response.generated)'));
 
   recordTurnMetric({
     studentId,
@@ -401,7 +438,7 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
     strategy: plan.strategy,
     defenseIssues: defense.issues.length,
     latencyMs,
-  }).catch(() => {});
+  }).catch(err => logger.warn({ err }, '[Crew] recordTurnMetric failed'));
 
   // ── 12. Async post-turn cognition (never blocks the reply) ───────────
   setImmediate(() => {
@@ -425,17 +462,23 @@ async function runPostTurn(
   const reflection = await runReflection(
     studentId, sessionId, turn.turnNumber, turn.studentMessage, turn.tutorResponse,
     { strategy: plan.strategy, intent: perception.primaryIntent }
-  ).catch(() => null);
+  ).catch(err => {
+    logger.debug({ err }, '[Crew] runReflection failed');
+    return null;
+  });
 
   if (reflection) {
     await db.query(
       `UPDATE conversation_turns SET reflection_score = $1 WHERE turn_id = $2`,
       [reflection.confidenceScore, turn.turnId]
-    ).catch(() => {});
+    ).catch(err => logger.warn({ err }, '[Crew] Failed to persist reflection score'));
   }
 
   // v3.0: Attribute Extraction Pipeline (replaces instant_facts)
-  const activeAttributes = await getActiveAttributes(studentId).catch(() => ({}));
+  const activeAttributes = await getActiveAttributes(studentId).catch(err => {
+    logger.debug({ err }, '[Crew] getActiveAttributes (post-turn) failed');
+    return {};
+  });
   await extractAttributesFromTurn(
     studentId,
     turn.turnId,
@@ -449,27 +492,38 @@ async function runPostTurn(
   await matchArchetypes(studentId).catch(err => logger.debug({ err }, '[Crew] Archetype matching failed'));
 
   // The student model learns from this turn (legacy pathway, preserved)
-  await updateStudentModel(profile, turn.studentMessage, turn.tutorResponse, perception, plan).catch(() => {});
+  await updateStudentModel(profile, turn.studentMessage, turn.tutorResponse, perception, plan).catch(err => {
+    logger.debug({ err }, '[Crew] updateStudentModel failed');
+  });
 
   // Curriculum assessment -> knowledge tracing, spaced repetition, progress
   if (turn.topic) {
     const decision = await assessCurriculum(
       turn.topic, turn.subject || 'general', turn.studentMessage, turn.tutorResponse,
       masterySignal, profile.culturalContext.examBoards?.[0] || 'WAEC', studentId
-    ).catch(() => null);
+    ).catch(err => {
+      logger.debug({ err }, '[Crew] assessCurriculum failed');
+      return null;
+    });
 
     if (decision) {
       if (decision.scheduleReview || masterySignal === 'strong') {
         const level = profile.conceptProgress[turn.topic]?.masteryLevel ?? (masterySignal === 'strong' ? 0.8 : 0.5);
-        await scheduleConceptReview(studentId, turn.topic, turn.subject || 'general', level).catch(() => {});
+        await scheduleConceptReview(studentId, turn.topic, turn.subject || 'general', level).catch(err => {
+          logger.debug({ err }, '[Crew] scheduleConceptReview failed');
+        });
       }
       if (decision.curriculumNote) {
-        await applyMemoryEdit(studentId, 'progress', 'append', decision.curriculumNote).catch(() => {});
+        await applyMemoryEdit(studentId, 'progress', 'append', decision.curriculumNote).catch(err => {
+          logger.debug({ err }, '[Crew] applyMemoryEdit (progress) failed');
+        });
       }
 
       if (decision.masteryAssessment === 'mastered') {
-        await applyMemoryEdit(studentId, 'breakthroughs', 'append', `Mastered "${turn.topic}" on ${new Date().toLocaleDateString('en-NG')}`).catch(() => {});
-        
+        await applyMemoryEdit(studentId, 'breakthroughs', 'append', `Mastered \"${turn.topic}\" on ${new Date().toLocaleDateString('en-NG')}`).catch(err => {
+          logger.debug({ err }, '[Crew] applyMemoryEdit (breakthroughs) failed');
+        });
+
         // v3.0: Use AI navigator for next topic suggestion instead of hardcoded graph
         const navDecision = await decideNextTopic({
           studentId,
@@ -486,12 +540,15 @@ async function runPostTurn(
             curiosity: perception.emotionalSignals.curiosity,
             selfEfficacy: perception.emotionalSignals.selfEfficacy,
           },
-        }).catch(() => null);
+        }).catch(err => {
+          logger.debug({ err }, '[Crew] decideNextTopic (post-mastery) failed');
+          return null;
+        });
 
         const nextConcept = navDecision?.nextTopic;
         await queueNotification(
           studentId, 'breakthrough_celebration',
-          `Student just mastered "${turn.topic}". Celebrate specifically.${nextConcept ? ` Suggest "${nextConcept}" as the next mountain to climb.` : ''}`,
+          `Student just mastered \"${turn.topic}\". Celebrate specifically.${nextConcept ? ` Suggest \"${nextConcept}\" as the next mountain to climb.` : ''}`,
           `breakthrough:${studentId}:${turn.topic}`
         );
 
@@ -500,7 +557,7 @@ async function runPostTurn(
           concept: turn.topic, evidenceType: 'curriculum_assessment',
           masteryLevel: profile.conceptProgress[turn.topic]?.masteryLevel ?? 0.8,
         };
-        await eventBus.publish(masteryEvent).catch(() => {});
+        await eventBus.publish(masteryEvent).catch(err => logger.warn({ err }, '[Crew] EventBus publish failed (mastery.detected)'));
       }
     }
   }
@@ -512,7 +569,7 @@ async function runPostTurn(
     frustrationSpike: perception.emotionalSignals.frustration > 0.7,
     flowMaintained: perception.emotionalSignals.flowIndicator > 0.6,
     answerLeak: false,
-  }).catch(() => {});
+  }).catch(err => logger.debug({ err }, '[Crew] recordPromptPerformance failed'));
 }
 
 async function queueNotification(studentId: string, type: string, content: string, dedupeKey: string): Promise<void> {
@@ -521,28 +578,5 @@ async function queueNotification(studentId: string, type: string, content: strin
      VALUES ($1, $2, $3, NOW() + INTERVAL '5 minutes', 5, $4)
      ON CONFLICT (dedupe_key) DO NOTHING`,
     [studentId, type, content, dedupeKey]
-  ).catch(() => {});
-}
-
-function inferSubjectFromGoal(goal: string | null | undefined): string | null {
-  if (!goal) return null;
-  const g = goal.toLowerCase();
-  if (/anatomy|medicine|surgery|biology|physio|mbbs|nursing/.test(g)) return 'biology';
-  if (/physics|engineering/.test(g)) return 'physics';
-  if (/chem/.test(g)) return 'chemistry';
-  if (/math|calcul|algebra/.test(g)) return 'mathematics';
-  if (/econ|account|commerce/.test(g)) return 'economics';
-  if (/english|lit/.test(g)) return 'english';
-  return null;
-}
-
-function firstConceptForSubject(subject: string | null | undefined): string | null {
-  const s = (subject || '').toLowerCase();
-  if (s === 'biology') return 'cells_and_tissues';
-  if (s === 'physics') return 'measurement_and_units';
-  if (s === 'chemistry') return 'matter_and_particles';
-  if (s === 'mathematics') return 'numbers_and_operations';
-  if (s === 'english') return 'sentence_basics';
-  if (s === 'economics') return 'basic_economic_problems';
-  return s && s !== 'general' ? `${s}_foundations` : null;
+  ).catch(err => logger.warn({ err }, '[Crew] queueNotification failed'));
 }
