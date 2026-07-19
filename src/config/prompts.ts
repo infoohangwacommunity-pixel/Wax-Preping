@@ -244,3 +244,9 @@ export async function setPrompt(componentId: string, text: string): Promise<void
   promptCache.delete(componentId);
   logger.info(`[Prompts] Updated ${componentId}`);
 }
+
+/** Invalidate the prompt cache (used by the evolution worker). */
+export function invalidatePromptCache(componentId?: string): void {
+  if (componentId) promptCache.delete(componentId);
+  else promptCache.clear();
+}
