@@ -6,8 +6,17 @@
  * 1. Insert into tools table
  * 2. Add handler function here
  * 3. Done. No tutor code changes.
+ *
+ * CRITICAL AUTOMATION RULES:
+ * - No manual past-question bank uploads.
+ * - No hardcoded exam boards or subjects.
+ * - past_question_retrieval synthesizes practice items from syllabus
+ *   objectives (LLM) and optionally enriches via live web search.
+ * - web_search uses Brave/Tavily (env-configured), never a hardcoded provider.
  */
-import { searchSyllabus, formatSyllabusContext, getChunksByTopic } from '../syllabus/store';
+import { searchSyllabus, formatSyllabusContext } from '../syllabus/store';
+import { searchBrave, searchTavily } from './search';
+import { routeAndCall } from '../llm/router';
 import { logger } from '../middleware/logger';
 import { db } from '../db/client';
 
@@ -66,8 +75,11 @@ export async function executeToolByName(
   }
 }
 
-async function handleSyllabusQuery(params: Record<string, unknown>): Promise<ToolResult> {
-  const query = String(params.query || '');
+async function handleSyllabusQuery(
+  params: Record<string, unknown>,
+  _studentId: string
+): Promise<ToolResult> {
+  const query = String(params.query || params.topic || '');
   const subject = params.subject ? String(params.subject) : undefined;
   const examBoard = params.exam_board ? String(params.exam_board) : undefined;
   const level = params.level ? String(params.level) : undefined;
@@ -85,42 +97,51 @@ async function handleSyllabusQuery(params: Record<string, unknown>): Promise<Too
   const output = formatSyllabusContext(chunks);
   return {
     success: true,
-    output,
+    output: output || 'No matching syllabus content found for that query.',
     data: chunks,
     latencyMs: 0,
   };
 }
 
-async function handleWebSearch(params: Record<string, unknown>): Promise<ToolResult> {
+async function handleWebSearch(
+  params: Record<string, unknown>,
+  _studentId: string
+): Promise<ToolResult> {
   const query = String(params.query || '');
   const maxResults = Math.min(10, Math.max(1, Number(params.max_results) || 5));
 
-  try {
-    const response = await fetch(`https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(query)}&count=${maxResults}`, {
-      headers: {
-        'Ocp-Apim-Subscription-Key': process.env.BING_SEARCH_API_KEY || '',
-      },
-    });
+  if (!query.trim()) {
+    return {
+      success: false,
+      output: 'Web search requires a query.',
+      error: 'missing_query',
+      latencyMs: 0,
+    };
+  }
 
-    if (!response.ok) {
+  try {
+    const [brave, tavily] = await Promise.allSettled([
+      searchBrave(query),
+      searchTavily(query),
+    ]);
+
+    const results = [
+      ...(brave.status === 'fulfilled' ? brave.value : []),
+      ...(tavily.status === 'fulfilled' ? tavily.value : []),
+    ].slice(0, maxResults);
+
+    if (results.length === 0) {
       return {
-        success: false,
-        output: `Web search failed: ${response.status}`,
-        error: `HTTP ${response.status}`,
+        success: true,
+        output: 'No web results found (search providers unavailable or empty).',
+        data: [],
         latencyMs: 0,
       };
     }
 
-    const data = await response.json() as { webPages?: { value?: Array<{ name: string; url: string; snippet: string }> } };
-    const results = (data.webPages?.value || []).map((r) => ({
-      title: r.name,
-      url: r.url,
-      snippet: r.snippet,
-    }));
-
-    const output = results.length > 0
-      ? results.map((r) => `- ${r.title}: ${r.snippet} (${r.url})`).join('\n')
-      : 'No web results found.';
+    const output = results
+      .map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet}\n   ${r.url}`)
+      .join('\n');
 
     return {
       success: true,
@@ -138,8 +159,20 @@ async function handleWebSearch(params: Record<string, unknown>): Promise<ToolRes
   }
 }
 
-async function handleCalculator(params: Record<string, unknown>): Promise<ToolResult> {
-  const expression = String(params.expression || '');
+async function handleCalculator(
+  params: Record<string, unknown>,
+  _studentId: string
+): Promise<ToolResult> {
+  const expression = String(params.expression || params.query || '');
+
+  if (!expression.trim()) {
+    return {
+      success: false,
+      output: 'Calculator requires an expression.',
+      error: 'missing_expression',
+      latencyMs: 0,
+    };
+  }
 
   try {
     const math = await import('mathjs');
@@ -161,22 +194,46 @@ async function handleCalculator(params: Record<string, unknown>): Promise<ToolRe
   }
 }
 
-async function handleCodeInterpreter(params: Record<string, unknown>): Promise<ToolResult> {
+async function handleCodeInterpreter(
+  params: Record<string, unknown>,
+  _studentId: string
+): Promise<ToolResult> {
   const code = String(params.code || '');
   const language = String(params.language || 'python');
 
+  // Intentionally not a sandboxed executor yet — returns structured guidance
+  // so the tutor can still reason about the code without a static bank.
   return {
     success: true,
-    output: `[Code execution stub for ${language}]\nCode submitted:\n${code.slice(0, 200)}...\n\nIn production, this runs in a sandboxed environment and returns output + any visualization URL.`,
-    data: { code, language, status: 'stub' },
+    output: [
+      `Code interpreter received ${language} snippet (${code.length} chars).`,
+      'Sandbox execution is not enabled in this environment.',
+      'Provide a step-by-step dry-run of the algorithm and expected outputs instead.',
+      code ? `Snippet preview:\n${code.slice(0, 400)}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    data: { code, language, status: 'dry_run_only' },
     latencyMs: 0,
   };
 }
 
-async function handleConceptLookup(params: Record<string, unknown>): Promise<ToolResult> {
-  const term = String(params.term || '');
+async function handleConceptLookup(
+  params: Record<string, unknown>,
+  studentId: string
+): Promise<ToolResult> {
+  const term = String(params.term || params.query || params.topic || '');
   const subject = params.subject ? String(params.subject) : undefined;
   const context = params.context ? String(params.context) : '';
+
+  if (!term.trim()) {
+    return {
+      success: false,
+      output: 'concept_lookup requires a term.',
+      error: 'missing_term',
+      latencyMs: 0,
+    };
+  }
 
   const chunks = await searchSyllabus({
     query: term,
@@ -185,74 +242,246 @@ async function handleConceptLookup(params: Record<string, unknown>): Promise<Too
   });
 
   if (chunks.length > 0) {
-    const output = formatSyllabusContext(chunks);
     return {
       success: true,
-      output,
+      output: formatSyllabusContext(chunks),
       data: chunks,
       latencyMs: 0,
     };
   }
 
-  const { routeAndCall } = await import('../llm/router');
-  const response = await routeAndCall([
-    { role: 'system', content: 'You are a concise academic dictionary. Define the term clearly with 2 examples and 3 related concepts. Keep under 300 words.' },
-    { role: 'user', content: `Define "${term}"${subject ? ` in ${subject}` : ''}${context ? `. Context: ${context}` : ''}` },
-  ], { tier: 'fast', maxTokens: 400, temperature: 0.2, purpose: 'concept_lookup' });
-
-  return {
-    success: true,
-    output: response.content,
-    data: { term, subject, source: 'llm_fallback' },
-    latencyMs: 0,
-  };
-}
-
-async function handlePastQuestionRetrieval(params: Record<string, unknown>): Promise<ToolResult> {
-  const subject = String(params.subject || '');
-  const topic = String(params.topic || '');
-  const examBoard = String(params.exam_board || 'WAEC');
-  const yearRange = Array.isArray(params.year_range) ? params.year_range as number[] : [2010, 2025];
-  const limit = Math.min(20, Math.max(1, Number(params.limit) || 5));
-
+  // Dynamic generation from LLM guided by optional context — never a static pack
   try {
-    const result = await db.query(
-      `SELECT * FROM past_questions 
-       WHERE subject = $1 AND topic = $2 AND exam_board = $3 
-         AND year BETWEEN $4 AND $5
-       ORDER BY year DESC, RANDOM()
-       LIMIT $6`,
-      [subject.toLowerCase(), topic.toLowerCase(), examBoard.toUpperCase(), yearRange[0], yearRange[1], limit]
+    const response = await routeAndCall(
+      [
+        {
+          role: 'system',
+          content:
+            'You define academic concepts clearly for secondary-school students. No fluff. JSON only.',
+        },
+        {
+          role: 'user',
+          content: [
+            `Term: ${term}`,
+            subject ? `Subject hint: ${subject}` : '',
+            context ? `Context: ${context}` : '',
+            'Return JSON: {"definition":"...","key_points":["..."],"common_confusion":"...","simple_example":"..."}',
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        },
+      ],
+      {
+        tier: 'smart',
+        jsonMode: true,
+        maxTokens: 500,
+        temperature: 0.3,
+        studentId,
+        purpose: 'concept_lookup',
+      }
     );
 
-    if (result.rows.length === 0) {
+    const cleaned = response.content.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleaned) as {
+      definition?: string;
+      key_points?: string[];
+      common_confusion?: string;
+      simple_example?: string;
+    };
+
+    const output = [
+      `Definition: ${parsed.definition || ''}`,
+      parsed.key_points?.length
+        ? `Key points:\n${parsed.key_points.map(p => `- ${p}`).join('\n')}`
+        : '',
+      parsed.common_confusion ? `Common confusion: ${parsed.common_confusion}` : '',
+      parsed.simple_example ? `Example: ${parsed.simple_example}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    return {
+      success: true,
+      output,
+      data: parsed,
+      latencyMs: 0,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      output: `Could not look up concept: ${term}`,
+      error: err instanceof Error ? err.message : String(err),
+      latencyMs: 0,
+    };
+  }
+}
+
+/**
+ * past_question_retrieval — AUTOMATIC, no manual bank.
+ *
+ * 1) Pull syllabus objectives for the topic (vector store).
+ * 2) Optionally enrich with live web search for public past-paper style items.
+ * 3) Synthesize practice questions with the LLM guided by syllabus metadata.
+ */
+async function handlePastQuestionRetrieval(
+  params: Record<string, unknown>,
+  studentId: string
+): Promise<ToolResult> {
+  const subject = params.subject ? String(params.subject) : undefined;
+  const topic = String(params.topic || params.query || '');
+  const examBoard = params.exam_board ? String(params.exam_board) : undefined;
+  const limit = Math.min(10, Math.max(1, Number(params.limit) || 5));
+
+  if (!topic.trim()) {
+    return {
+      success: false,
+      output: 'past_question_retrieval requires a topic.',
+      error: 'missing_topic',
+      latencyMs: 0,
+    };
+  }
+
+  try {
+    const syllabusChunks = await searchSyllabus({
+      query: topic,
+      subject,
+      examBoard,
+      limit: 5,
+    });
+    const syllabusContext = formatSyllabusContext(syllabusChunks);
+
+    const searchQuery = [
+      examBoard || '',
+      subject || '',
+      topic,
+      'past questions exam practice',
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+
+    const [brave, tavily] = await Promise.allSettled([
+      searchBrave(searchQuery),
+      searchTavily(searchQuery),
+    ]);
+    const webHits = [
+      ...(brave.status === 'fulfilled' ? brave.value : []),
+      ...(tavily.status === 'fulfilled' ? tavily.value : []),
+    ].slice(0, 5);
+
+    const webContext = webHits.length
+      ? webHits.map((r, i) => `[${i + 1}] ${r.title}: ${r.snippet}`).join('\n')
+      : 'No external past-paper snippets available.';
+
+    const response = await routeAndCall(
+      [
+        {
+          role: 'system',
+          content: [
+            'You generate original exam-style practice questions for secondary students.',
+            'NEVER copy copyrighted past papers verbatim.',
+            'Ground every item in the provided syllabus objectives.',
+            'Match the style and difficulty of the named exam board when provided.',
+            'Return JSON only.',
+          ].join(' '),
+        },
+        {
+          role: 'user',
+          content: [
+            `Topic: ${topic}`,
+            subject ? `Subject: ${subject}` : '',
+            examBoard ? `Exam board label: ${examBoard}` : 'Exam board: discover from context or keep generic',
+            `How many questions: ${limit}`,
+            '',
+            'SYLLABUS OBJECTIVES / CONTEXT:',
+            syllabusContext || '(none found — use general secondary curriculum standards)',
+            '',
+            'EXTERNAL REFERENCE SNIPPETS (inspiration only, do not copy):',
+            webContext,
+            '',
+            'Return JSON:',
+            '{',
+            '  "questions": [',
+            '    {',
+            '      "prompt": "...",',
+            '      "options": ["A ...","B ..."] | null,',
+            '      "answer": "...",',
+            '      "explanation": "...",',
+            '      "objective_tested": "...",',
+            '      "difficulty": "easy"|"medium"|"hard"',
+            '    }',
+            '  ]',
+            '}',
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        },
+      ],
+      {
+        tier: 'smart',
+        jsonMode: true,
+        maxTokens: 1400,
+        temperature: 0.5,
+        studentId,
+        purpose: 'past_question_synthesis',
+      }
+    );
+
+    const cleaned = response.content.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleaned) as {
+      questions?: Array<{
+        prompt?: string;
+        options?: string[] | null;
+        answer?: string;
+        explanation?: string;
+        objective_tested?: string;
+        difficulty?: string;
+      }>;
+    };
+
+    const questions = (parsed.questions || []).slice(0, limit);
+    if (questions.length === 0) {
       return {
         success: true,
-        output: `No past questions found for ${subject} — ${topic} (${examBoard}, ${yearRange[0]}-${yearRange[1]}). Try a broader topic or different exam board.`,
+        output: `Could not synthesize practice questions for "${topic}". Try a more specific topic.`,
         data: { subject, topic, examBoard, count: 0 },
         latencyMs: 0,
       };
     }
 
-    const questions = result.rows.map((r: Record<string, unknown>) => ({
-      year: r.year,
-      question: r.question_text,
-      options: r.options,
-      answer: r.correct_answer,
-      explanation: r.explanation,
-    }));
-
-    const output = questions.map((q: Record<string, unknown>, i: number) =>
-      `${i + 1}. [${q.year}] ${q.question}\n${Array.isArray(q.options) ? q.options.map((o: string, j: number) => `   ${String.fromCharCode(65 + j)}. ${o}`).join('\n') : ''}\n   Answer: ${q.answer}\n   ${q.explanation || ''}`
-    ).join('\n\n');
+    const output = questions
+      .map((q, i) => {
+        const opts = Array.isArray(q.options)
+          ? q.options.map((o, j) => `   ${String.fromCharCode(65 + j)}. ${o}`).join('\n')
+          : '';
+        return [
+          `${i + 1}. [${q.difficulty || 'medium'}] ${q.prompt || ''}`,
+          opts,
+          q.answer ? `   Answer: ${q.answer}` : '',
+          q.explanation ? `   Why: ${q.explanation}` : '',
+          q.objective_tested ? `   Objective: ${q.objective_tested}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n');
+      })
+      .join('\n\n');
 
     return {
       success: true,
       output,
-      data: { subject, topic, examBoard, count: questions.length, questions },
+      data: {
+        subject,
+        topic,
+        examBoard: examBoard || null,
+        count: questions.length,
+        questions,
+        source: 'llm_synthesis_from_syllabus',
+        web_refs: webHits.map(w => w.url),
+      },
       latencyMs: 0,
     };
   } catch (err) {
+    logger.warn({ err }, '[Tools] past_question_retrieval failed');
     return {
       success: false,
       output: 'Past question retrieval failed.',
@@ -268,18 +497,20 @@ async function logToolCall(
   input: Record<string, unknown>,
   result: ToolResult
 ): Promise<void> {
-  await db.query(
-    `INSERT INTO tool_call_logs (student_id, tool_name, tool_input, tool_output, latency_ms, error)
+  await db
+    .query(
+      `INSERT INTO tool_call_logs (student_id, tool_name, tool_input, tool_output, latency_ms, error)
      VALUES ($1, $2, $3, $4, $5, $6)`,
-    [
-      studentId,
-      toolName,
-      JSON.stringify(input),
-      JSON.stringify({ success: result.success, output: result.output, data: result.data }),
-      result.latencyMs,
-      result.error || null,
-    ]
-  ).catch(err => {
-    logger.debug({ err }, '[ToolLog] Failed to log tool call');
-  });
+      [
+        studentId,
+        toolName,
+        JSON.stringify(input),
+        JSON.stringify({ success: result.success, output: result.output, data: result.data }),
+        result.latencyMs,
+        result.error || null,
+      ]
+    )
+    .catch(err => {
+      logger.debug({ err }, '[ToolLog] Failed to log tool call');
+    });
 }

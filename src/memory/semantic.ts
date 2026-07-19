@@ -185,12 +185,13 @@ function createDefaultProfile(studentId: string): StudentProfile {
     analogyLibrary: [],
     examTargets: [],
     culturalContext: {
-      country: 'Nigeria',
+      // Discovered dynamically from student attributes / conversation — never assumed.
+      country: '',
       region: '',
-      language: 'English',
-      currency: 'NGN',
-      examBoards: ['WAEC', 'JAMB', 'NECO'],
-      timezone: 'Africa/Lagos',
+      language: '',
+      currency: '',
+      examBoards: [],
+      timezone: process.env.DEFAULT_STUDENT_TIMEZONE || 'Africa/Lagos',
     },
     facts: {},
   };
