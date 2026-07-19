@@ -859,7 +859,7 @@ async function seedDefaultTools(): Promise<void> {
     },
     {
       name: 'code_interpreter',
-      description: 'Execute Python or JavaScript in a short-lived isolated subprocess (timeout + security scan).',,
+      description: 'Execute Python or JavaScript in a short-lived isolated subprocess (timeout + security scan).',
       input_schema: { type: 'object', properties: { code: { type: 'string' }, language: { type: 'string', default: 'python' } }, required: ['code'] },
       handler_module: 'src/tools/implementations.ts',
     },
