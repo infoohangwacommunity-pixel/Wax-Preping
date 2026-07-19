@@ -125,7 +125,6 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
   eventBus.publish(msgEvent).catch(() => {});
 
   await updateStudyStreak(studentId);
-  await incrementTurns(studentId);
 
   // ── 2. Perception ───────────────────────────────────────────────────────
   const media: IncomingMedia = { type: modality, text: rawMessage, mediaId, caption: mediaCaption };
@@ -460,9 +459,6 @@ async function runPostTurn(
     ).catch(() => null);
 
     if (decision) {
-      if (decision.conceptBelief) {
-        await updateSymbolicBelief(studentId, turn.topic, decision.conceptBelief.claim, decision.conceptBelief.status, decision.conceptBelief.confidence, decision.conceptBelief.evidence).catch(() => {});
-      }
       if (decision.scheduleReview || masterySignal === 'strong') {
         const level = profile.conceptProgress[turn.topic]?.masteryLevel ?? (masterySignal === 'strong' ? 0.8 : 0.5);
         await scheduleConceptReview(studentId, turn.topic, turn.subject || 'general', level).catch(() => {});
