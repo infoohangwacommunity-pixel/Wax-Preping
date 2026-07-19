@@ -871,7 +871,7 @@ async function seedDefaultTools(): Promise<void> {
     },
     {
       name: 'past_question_retrieval',
-      description: 'Fetch WAEC/JAMB past questions for practice.',
+      description: 'Synthesize exam-style practice questions from syllabus objectives and live public sources. No manual question bank.',
       input_schema: { type: 'object', properties: { subject: { type: 'string' }, topic: { type: 'string' }, exam_board: { type: 'string' }, year_range: { type: 'array', items: { type: 'number' } }, limit: { type: 'number', default: 5 } }, required: ['subject', 'topic'] },
       handler_module: 'src/tools/implementations.ts',
     },
