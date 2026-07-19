@@ -7,7 +7,6 @@
  */
 import { db } from '../db/client';
 import { DEFAULT_BKT, type BktParams } from '../teaching/bkt';
-import { ensureCurriculumSchema } from './store';
 
 export async function getConceptBktParams(conceptId: string): Promise<BktParams> {
   await ensureCurriculumSchema();
