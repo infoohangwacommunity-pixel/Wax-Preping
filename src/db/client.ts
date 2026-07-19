@@ -116,6 +116,7 @@ export async function initializeDatabase(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_student_archetypes_name ON student_archetypes (name);
     CREATE TABLE IF NOT EXISTS student_archetype_memberships (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       student_id TEXT NOT NULL,
@@ -356,10 +357,9 @@ export async function initializeDatabase(): Promise<void> {
   // Cleanup old processed messages (keep 7 days)
   await db.query(`DELETE FROM processed_messages WHERE processed_at < NOW() - INTERVAL '7 days'`).catch(() => {});
 
-  // =====================================================================
+  //=====================================================================
   // v3.0 COGNITIVE MEMORY ARCHITECTURE TABLES
-  // =====================================================================
-
+  //=====================================================================
   // Segmentation config
   await db.query(`
     CREATE TABLE IF NOT EXISTS segmentation_config (
@@ -746,7 +746,7 @@ export async function initializeDatabase(): Promise<void> {
     ('prediction', '{"enabled": true, "preload_ttl_seconds": 21600, "prediction_horizon_days": 7}', 'Predictive pre-load settings'),
     ('palace', '{"enabled": true, "auto_construct": true, "max_wings": 20, "max_rooms_per_wing": 50}', 'Memory palace settings'),
     ('tool_memory', '{"enabled": true, "learn_from_failures": true, "dependency_tracking": true}', 'Tool-memory symbiosis settings'),
-    ('sleep_mode', '{"enabled": true, "schedule_cron": "0 2 * * *", "tick_cron": "*/15 * * * *", "local_hour": 2, "timezone_aware": true, "max_students_per_night": 100, "min_hours_between_runs": 20, "lookback_days": 7, "batch_size": 5}', 'Timezone-aware sleep mode consolidation settings'),
+    ('sleep_mode', '{"enabled": true, "schedule_cron": "0 2 * * *", "timezone_aware": true, "max_students_per_night": 100}', 'Sleep mode consolidation settings'),
     ('graph', '{"adapter": "postgres", "neo4j_uri": null, "neo4j_user": null, "embedding_dimension": 384}', 'Graph database adapter configuration')
     ON CONFLICT (key) DO NOTHING;
   `);
@@ -767,7 +767,6 @@ export async function initializeDatabase(): Promise<void> {
   // v3.0: Migrate existing student_facts into student_attributes (only if data exists)
   const factsCountRes = await db.query(`SELECT COUNT(*)::int AS count FROM student_facts`).catch(() => ({ rows: [{ count: 0 }] }));
   const factsCount = factsCountRes.rows[0]?.count || 0;
-
   if (factsCount > 0) {
     await db.query(`
       INSERT INTO student_attributes (
@@ -826,7 +825,6 @@ async function seedDefaultArchetypes(): Promise<void> {
       config: { rules: [{ attribute_key: 'self_efficacy', operator: 'lt', value: 0.4 }] },
     },
   ];
-
   for (const a of archetypes) {
     await db.query(
       `INSERT INTO student_archetypes (name, description, config, is_discovered)
@@ -859,7 +857,7 @@ async function seedDefaultTools(): Promise<void> {
     },
     {
       name: 'code_interpreter',
-      description: 'Execute Python or JavaScript in a short-lived isolated subprocess (timeout + security scan).',
+      description: 'Run Python code for simulations, visualizations, and algorithmic explanations.',
       input_schema: { type: 'object', properties: { code: { type: 'string' }, language: { type: 'string', default: 'python' } }, required: ['code'] },
       handler_module: 'src/tools/implementations.ts',
     },
@@ -871,12 +869,11 @@ async function seedDefaultTools(): Promise<void> {
     },
     {
       name: 'past_question_retrieval',
-      description: 'Synthesize exam-style practice questions from syllabus objectives and live public sources. No manual question bank.',
+      description: 'Fetch WAEC/JAMB past questions for practice.',
       input_schema: { type: 'object', properties: { subject: { type: 'string' }, topic: { type: 'string' }, exam_board: { type: 'string' }, year_range: { type: 'array', items: { type: 'number' } }, limit: { type: 'number', default: 5 } }, required: ['subject', 'topic'] },
       handler_module: 'src/tools/implementations.ts',
     },
   ];
-
   for (const t of tools) {
     await db.query(
       `INSERT INTO tools (name, description, input_schema, handler_module, is_enabled)
