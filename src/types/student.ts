@@ -127,18 +127,14 @@ export interface ConceptProgress {
 
 export interface ErrorEntry {
   concept: string;
-  errorType: string;
-  count: number;
-  lastOccurred: Date;
-  resolved: boolean;
+  description: string;
+  timestamp: string;
+  corrected: boolean;
 }
 
 export interface AnalogyEntry {
   concept: string;
   analogy: string;
-  domain: string;
-  effectiveness: number;
-  usedAt: Date;
 }
 
 export interface MemoryBlocks {
