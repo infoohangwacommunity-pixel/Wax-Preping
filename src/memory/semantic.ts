@@ -492,7 +492,7 @@ export async function recordErrorPattern(
   const diary = [...(profile.errorDiary || [])];
   diary.push({
     concept,
-    error,
+    description: error,
     timestamp: new Date().toISOString(),
     corrected: false,
   });
@@ -563,7 +563,6 @@ export async function recordAnalogy(
   library.push({
     concept,
     analogy,
-    timestamp: new Date().toISOString(),
   });
   if (library.length > 50) library.shift();
 
