@@ -23,7 +23,8 @@ import { getCognitiveConfig, setCognitiveConfig, getSegmentationConfig, updateSe
 import { evaluateSessionBoundary, getRecentBoundaries, provideBoundaryFeedback } from './cognitive/segmentation';
 import { retrieveMemories } from './forgetting/engine';
 import { predictivePreLoad, checkPreloadCache } from './predictive/engine';
-import { ensurePalace, getPalaceHierarchy, getPalaceStats, discoverTunnels } from './palace/organizer';
+import { ensurePalace, discoverTunnels } from './palace/organizer';
+import { getPalaceHierarchy, getPalaceStats } from './palace/hierarchy';
 import { runSleepMode } from './sleep/pipeline';
 import { startSleepScheduler } from './sleep/scheduler';
 
