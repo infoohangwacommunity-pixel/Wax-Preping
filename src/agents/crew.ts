@@ -220,7 +220,7 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
 
   // ── 5. AI-Driven Navigation (v3.0) ──────────────────────────────────────
   let navigationDecision = null;
-  if (perception.primaryIntent === 'ready_to_learn' || perception.primaryIntent === 'asking_explanation') {
+  if (perception.primaryIntent === 'asking_explanation') {
     navigationDecision = await decideNextTopic({
       studentId,
       currentTopic: currentConcept,
