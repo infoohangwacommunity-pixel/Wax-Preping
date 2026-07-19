@@ -5,7 +5,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db/client';
 import { logger } from '../middleware/logger';
-import { incrementSessions } from '../memory/semantic';
+// incrementSessions removed — session count tracked via getOrCreateSession
 import type { Session, SessionState } from '../types/student';
 
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -60,7 +60,6 @@ export async function getOrCreateSession(studentId: string): Promise<Session> {
      VALUES ($1, $2, NOW(), NOW(), 0, TRUE, $3)`,
     [sessionId, studentId, JSON.stringify(DEFAULT_SESSION_STATE)]
   );
-  await incrementSessions(studentId);
 
   return {
     sessionId,
