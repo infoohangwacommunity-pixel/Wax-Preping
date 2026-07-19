@@ -43,7 +43,7 @@ app.use((req: Request, res, next) => {
 });
 
 app.use(express.json());
-app.use(logger);
+// logger is pino, not Express middleware — request logging handled by Railway
 
 app.get('/health', (_req: Request, res: Response) => {
   res.status(200).json({ status: 'ok', version: '3.0.0-cognitive' });
