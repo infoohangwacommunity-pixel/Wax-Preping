@@ -27,10 +27,9 @@ import { recordTurnMetric } from '../observability/metrics';
 import { runDefenseChecks } from '../defense/defense';
 import { runReflection, getReflectionSummary } from '../reflection/reflection';
 import { buildWorkingMemory, formatHistoryForOrchestrator } from '../memory/working';
-import { getStudentProfile, updateStudyStreak, incrementTurns, updateSymbolicBelief, applyMemoryEdit } from '../memory/semantic';
+import { getStudentProfile, updateStudyStreak, applyMemoryEdit } from '../memory/semantic';
 import { saveEpisode, getRecentHistory, recallRelevantEpisodes } from '../memory/episodic';
 import { updateStudentModel } from '../memory/student_model';
-import { buildStudentDossier } from '../memory/dossier';
 import { getOrCreateSession, touchSession, updateSessionState } from '../session/manager';
 import { scheduleConceptReview, getDueReviews } from '../features/spaced_repetition';
 import { getWorldModelState } from '../world_model/predictive_model';
@@ -190,8 +189,6 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
     ? profile.conceptProgress[currentConcept].masteryLevel
     : 0.5;
 
-  const dossier = buildStudentDossier(profile, session.state);
-
   // v3.0: Build dynamic subject context from syllabus + attributes
   const subjectContext = [
     subjectPedagogy
@@ -200,7 +197,6 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
     syllabusContext ? `SYLLABUS REFERENCE:\n${syllabusContext}` : '',
     `STUDENT ATTRIBUTES (use these — do not re-ask known facts):\n${attributeContext}`,
     archetypeModifier ? `ARCHETYPE GUIDANCE:\n${archetypeModifier}` : '',
-    `STUDENT DOSSIER (hierarchical memory):\n${dossier}`,
   ].filter(Boolean).join('\n\n');
 
   const ctx: TurnContext = {
