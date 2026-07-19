@@ -1,5 +1,11 @@
 [phases.setup]
-nixPkgs = ['nodejs', 'npm', 'redis']
+nixPkgs = ['nodejs', 'npm', 'redis', 'postgresql']
 
 [phases.install]
 cmds = ['npm install']
+
+[phases.build]
+cmds = ['npm run build']
+
+[start]
+cmd = 'node dist/index.js'
