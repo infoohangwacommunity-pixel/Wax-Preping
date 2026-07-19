@@ -77,7 +77,15 @@ export async function updateStudentModel(
 
 async function applyUpdate(studentId: string, update: StudentModelUpdate, perception: PerceptionResult): Promise<void> {
   if (Array.isArray(update.facts) && update.facts.length > 0) {
-    await upsertStudentFact(studentId, update.facts).catch(() => {});
+    for (const fact of update.facts) {
+      await upsertStudentFact(studentId, {
+        factKey: fact.key,
+        factValue: fact.value,
+        confidence: fact.confidence || 0.7,
+        source: 'student_model',
+        updatedAt: new Date(),
+      }).catch(() => {});
+    }
   }
 
   if (Array.isArray(update.memoryUpdates)) {
@@ -103,13 +111,10 @@ async function applyUpdate(studentId: string, update: StudentModelUpdate, percep
   }
 
   if (update.analogyUsed?.analogy && (update.analogyUsed.concept || concept)) {
-    const worked = perception.masterySignal === 'strong' ? true : perception.masterySignal === 'none' && perception.hasMisconception ? false : null;
     await recordAnalogy(
       studentId,
       update.analogyUsed.concept || concept!,
-      update.analogyUsed.analogy.slice(0, 200),
-      update.analogyUsed.domain || 'everyday',
-      worked
+      update.analogyUsed.analogy.slice(0, 200)
     ).catch(() => {});
   }
 
