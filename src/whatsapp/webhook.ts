@@ -140,7 +140,7 @@ async function handleMessage(message: Record<string, unknown>, phoneNumberId: st
 
     const responseText = await processTutorMessage({
       studentId, rawMessage, messageId,
-      modality: messageType as 'text' | 'image' | 'audio' | 'document' | 'video',
+      modality: messageType as 'text' | 'image' | 'audio' | 'document',
       mediaId, mediaCaption,
     });
 
