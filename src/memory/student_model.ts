@@ -17,10 +17,10 @@ import { getPrompt } from '../config/prompts';
 import { logger } from '../middleware/logger';
 import {
   applyMemoryEdit,
-  upsertStudentFacts,
+  upsertStudentFact,
   updateConceptEvidence,
   recordErrorPattern,
-  recordAnalogyUse,
+  recordAnalogy,
 } from './semantic';
 import type { MemoryBlocks, BloomLevel, StudentProfile } from '../types/student';
 import type { PerceptionResult, TeachingPlan } from '../types/teaching';
@@ -77,7 +77,7 @@ export async function updateStudentModel(
 
 async function applyUpdate(studentId: string, update: StudentModelUpdate, perception: PerceptionResult): Promise<void> {
   if (Array.isArray(update.facts) && update.facts.length > 0) {
-    await upsertStudentFacts(studentId, update.facts).catch(() => {});
+    await upsertStudentFact(studentId, update.facts).catch(() => {});
   }
 
   if (Array.isArray(update.memoryUpdates)) {
@@ -104,7 +104,7 @@ async function applyUpdate(studentId: string, update: StudentModelUpdate, percep
 
   if (update.analogyUsed?.analogy && (update.analogyUsed.concept || concept)) {
     const worked = perception.masterySignal === 'strong' ? true : perception.masterySignal === 'none' && perception.hasMisconception ? false : null;
-    await recordAnalogyUse(
+    await recordAnalogy(
       studentId,
       update.analogyUsed.concept || concept!,
       update.analogyUsed.analogy.slice(0, 200),
