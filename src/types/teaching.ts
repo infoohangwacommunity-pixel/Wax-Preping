@@ -35,7 +35,7 @@ export interface CurriculumAssessment {
   scheduleReview: boolean;
 }
 
-/** Output of the perception layer: one structured read of the student's message. */
+// Output of the perception layer: one structured read of the student's message.
 export interface PerceptionResult {
   rawMessage: string;
   modality: string;
