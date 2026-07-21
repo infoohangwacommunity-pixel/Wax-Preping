@@ -20,6 +20,20 @@ import type {
 import type { UsageSummary } from './llm';
 import type { BoundaryDecision, PreloadContext, MemoryChunk } from './cognitive';
 
+export interface CurriculumAssessment {
+  masteryAssessment: 'mastered' | 'progressing' | 'struggling' | 'surface_learned';
+  nextConcept: string | null;
+  paceRecommendation: 'accelerate' | 'maintain' | 'slow_down';
+  conceptBelief: {
+    claim: string;
+    status: 'MASTERS' | 'UNDERSTANDS' | 'CONFUSES' | 'HAS_NOT_SEEN';
+    confidence: 'high' | 'medium' | 'low';
+    evidence: string;
+  } | null;
+  curriculumNote: string;
+  scheduleReview: boolean;
+}
+
 /** Output of the perception layer: one structured read of the student's message. */
 export interface PerceptionResult {
   rawMessage: string;

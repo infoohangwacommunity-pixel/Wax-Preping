@@ -86,8 +86,84 @@ export interface SessionBoundaryRecord {
 
 export type GraphNodeLabel = 'Episode' | 'Concept' | 'Fact' | 'State' | 'ToolResult' | 'Insight' | 'Community' | string;
 
-import type { GraphAdapter } from '../graph/interfaces';
 export type GraphQueryResult = GraphNode | GraphEdge | GraphPath | Record<string, unknown>;
+
+export interface GraphNode {
+  id: string;
+  labels: GraphNodeLabel[];
+  properties: Record<string, unknown>;
+  embedding?: number[];
+  event_time: Date;
+  ingest_time: Date;
+  validity_window?: [Date | null, Date | null];
+  student_id?: string;
+  source?: string;
+  created_at: Date;
+}
+
+export interface GraphEdge {
+  id: string;
+  source_id: string;
+  target_id: string;
+  type: string;
+  properties: Record<string, unknown>;
+  event_time: Date;
+  ingest_time: Date;
+  validity_window?: [Date | null, Date | null];
+  student_id?: string;
+  created_at: Date;
+}
+
+export interface GraphPath {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  length: number;
+}
+
+export interface NodeCreateInput {
+  labels: GraphNodeLabel[];
+  properties: Record<string, unknown>;
+  embedding?: number[];
+  event_time?: Date;
+  validity_window?: [Date | null, Date | null];
+  student_id?: string;
+  source?: string;
+}
+
+export interface EdgeCreateInput {
+  source_id: string;
+  target_id: string;
+  type: string;
+  properties?: Record<string, unknown>;
+  event_time?: Date;
+  validity_window?: [Date | null, Date | null];
+  student_id?: string;
+}
+
+export interface TraversalOptions {
+  edgeTypes?: string[];
+  maxDepth?: number;
+  direction?: 'out' | 'in' | 'both';
+  nodeFilter?: Record<string, unknown>;
+  timeRange?: [Date, Date];
+  limit?: number;
+}
+
+export interface SimilaritySearchOptions {
+  embedding: number[];
+  limit?: number;
+  studentId?: string;
+  nodeLabels?: string[];
+  minSimilarity?: number;
+}
+
+export interface BiTemporalQueryOptions {
+  nodeLabel: string;
+  studentId: string;
+  atTime: Date;
+  additionalFilters?: Record<string, unknown>;
+}
+
 
 // =============================================================================
 // BREAKTHROUGH 3: HUMAN-LIKE FORGETTING ENGINE

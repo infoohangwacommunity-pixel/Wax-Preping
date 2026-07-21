@@ -21,7 +21,7 @@ import type {
   TraversalOptions,
   SimilaritySearchOptions,
   BiTemporalQueryOptions,
-} from './types';
+} from '../types/cognitive';
 import { logger } from '../middleware/logger';
 
 export class Neo4jGraphAdapter implements GraphAdapter {

@@ -19,7 +19,7 @@
  *   min_hours_between_runs, lookback_days
  */
 import cron from 'node-cron';
-import { runSleepModeBatch } from './pipeline';
+import { runSleepModeBatch, runSleepMode } from './pipeline';
 import { getCognitiveConfig } from '../config/cognitive';
 import { logger } from '../middleware/logger';
 import { db } from '../db/client';
@@ -385,7 +385,6 @@ export async function runNightlyConsolidation(maxStudents: number): Promise<void
  * Manually trigger sleep mode for a specific student.
  */
 export async function triggerSleepModeForStudent(studentId: string): Promise<void> {
-  const { runSleepMode } = await import('./pipeline');
   await runSleepMode(studentId);
 }
 

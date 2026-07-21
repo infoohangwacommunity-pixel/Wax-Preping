@@ -5,7 +5,7 @@
  */
 
 import type { GraphAdapter } from './interfaces';
-import type { GraphNode, GraphPath } from './types';
+import type { GraphNode, GraphPath } from '../types/cognitive';
 import { logger } from '../middleware/logger';
 
 /**

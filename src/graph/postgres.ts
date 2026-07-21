@@ -16,7 +16,7 @@ import type {
   TraversalOptions,
   SimilaritySearchOptions,
   BiTemporalQueryOptions,
-} from './types';
+} from '../types/cognitive';
 
 export class PostgresGraphAdapter implements GraphAdapter {
   readonly name = 'postgres';

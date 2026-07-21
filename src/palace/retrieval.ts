@@ -7,6 +7,7 @@ import { db } from '../db/client';
 import { getGraphAdapter } from '../graph/factory';
 import { logger } from '../middleware/logger';
 import type { GraphNode } from '../types/cognitive';
+import { cosineSimilarity } from '../cognitive/forgetting/activation';
 
 /**
  * Retrieve all graph nodes within a palace drawer.

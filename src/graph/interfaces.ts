@@ -8,14 +8,12 @@ import type {
   GraphNode,
   GraphEdge,
   GraphPath,
-} from '../types/cognitive';
-import type { // These types are still expected from './types', which is not provided.
   NodeCreateInput,
   EdgeCreateInput,
   TraversalOptions,
   SimilaritySearchOptions,
   BiTemporalQueryOptions,
-} from './types';
+} from '../types/cognitive';
 
 export interface GraphAdapter {
   readonly name: string;

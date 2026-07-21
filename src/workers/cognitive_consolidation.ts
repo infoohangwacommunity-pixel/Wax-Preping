@@ -8,6 +8,7 @@ import { startSleepScheduler, runNightlyConsolidation } from '../sleep/scheduler
 import { migrateExistingDataToGraph } from '../graph/migration';
 import { initializeDatabase } from '../db/client';
 import { logger } from '../middleware/logger';
+import { runSleepMode } from '../sleep/pipeline';
 
 const COMMAND = process.argv[2];
 
