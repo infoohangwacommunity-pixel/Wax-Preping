@@ -13,7 +13,6 @@ import { logger } from './middleware/logger';
 import { db } from './db/client';
 import { searchSyllabus, getAvailableSubjects, getTopicsForSubject } from './syllabus/store';
 import { ingestSyllabusDirectory } from './syllabus/ingest';
-import { autoIngestSyllabus, ingestFromUrl, ensureIngestSchema } from './syllabus/auto_ingest';
 import { getActiveAttributes } from './student_profile/attribute_pipeline';
 import { matchArchetypes, warmStartFromArchetype } from './student_profile/archetypes';
 import { getOnboardingState } from './onboarding/engine';
@@ -27,7 +26,7 @@ import { predictivePreLoad, checkPreloadCache } from './predictive/engine';
 import { ensurePalace, discoverTunnels } from './palace/organizer';
 import { getPalaceHierarchy, getPalaceStats } from './palace/hierarchy';
 import { runSleepMode } from './sleep/pipeline';
-import { startSleepScheduler, runTimezoneAwareTick, previewSleepCandidates, runNightlyConsolidation } from './sleep/scheduler';
+import { startSleepScheduler } from './sleep/scheduler';
 import { checkRateLimit } from './middleware/rate_limiter';
 
 const app = express();
@@ -63,29 +62,22 @@ function requireAdminRateLimit(req: Request, res: Response, next: NextFunction):
     .catch(() => next()); // If rate limiter fails, allow through
 }
 
-// Capture raw body for Meta signature verification BEFORE express.json() parses
-app.use((req: Request, res: Response, next: NextFunction) => {
-  let data = '';
-  req.setEncoding('utf8');
-  req.on('data', chunk => { data += chunk; });
-  req.on('end', () => {
-    (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(data);
-    next();
-  });
-});
-
-app.use(express.json());
+// Capture raw body for Meta signature verification safely without breaking express.json()
+app.use(express.json({
+  verify: (req: Request & { rawBody?: Buffer }, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 
 app.get('/health', (_req: Request, res: Response) => {
   res.status(200).json({ status: 'ok', version: '3.0.0-cognitive' });
 });
 
-// ── Admin Routes ─────────────────────────────────────────────────────────
-// All /admin routes require authentication and rate limiting
+// --- Admin Routes ---
+// All admin routes require authentication and rate limiting
 app.use('/admin', requireAdminRateLimit, requireAdmin);
 
-// ── Admin Routes: Student Profile ────────────────────────────────────────
-
+// --- Admin Routes: Student Profile ---
 app.get('/admin/students/:studentId/attributes', async (req: Request, res: Response) => {
   try {
     const attrs = await getActiveAttributes(req.params.studentId);
@@ -143,8 +135,7 @@ app.get('/admin/students/:studentId/onboarding', async (req: Request, res: Respo
   }
 });
 
-// ── Admin Routes: Syllabus ───────────────────────────────────────────────
-
+// --- Admin Routes: Syllabus ---
 app.get('/admin/syllabus/search', async (req: Request, res: Response) => {
   try {
     const { query, subject, exam_board, level, topic, limit } = req.query;
@@ -203,56 +194,7 @@ app.post('/admin/syllabus/ingest', async (req: Request, res: Response) => {
   }
 });
 
-// Automatic syllabus discovery (no manual PDF upload required)
-app.post('/admin/syllabus/auto-ingest', async (req: Request, res: Response) => {
-  try {
-    const { subject, examBoard, level, queryHint, maxSources, force, url } = req.body || {};
-    if (url && typeof url === 'string') {
-      const result = await ingestFromUrl(url, {
-        subject: typeof subject === 'string' ? subject : undefined,
-        examBoard: typeof examBoard === 'string' ? examBoard : undefined,
-        level: typeof level === 'string' ? level : undefined,
-        force: force === true,
-      });
-      res.json(result);
-      return;
-    }
-    const result = await autoIngestSyllabus({
-      subject: typeof subject === 'string' ? subject : undefined,
-      examBoard: typeof examBoard === 'string' ? examBoard : undefined,
-      level: typeof level === 'string' ? level : undefined,
-      queryHint: typeof queryHint === 'string' ? queryHint : undefined,
-      maxSources: typeof maxSources === 'number' ? maxSources : undefined,
-      force: force === true,
-    });
-    res.json(result);
-  } catch (err) {
-    logger.error({ err }, '[Admin] Auto-ingest failed');
-    res.status(500).json({ error: 'Auto-ingest failed' });
-  }
-});
-
-app.get('/admin/syllabus/ingest-runs', async (req: Request, res: Response) => {
-  try {
-    await ensureIngestSchema();
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
-    const result = await db.query(
-      `SELECT id, source_url, subject, exam_board, status, chunks_inserted, error_message, started_at, completed_at
-       FROM syllabus_ingest_runs
-       ORDER BY started_at DESC
-       LIMIT $1`,
-      [limit]
-    );
-    res.json({ runs: result.rows });
-  } catch (err) {
-    logger.error({ err }, '[Admin] Failed to list ingest runs');
-    res.status(500).json({ error: 'Failed to list ingest runs' });
-  }
-});
-
-
-// ── Admin Routes: Tools ──────────────────────────────────────────────────
-
+// --- Admin Routes: Tools ---
 app.get('/admin/tools', async (_req: Request, res: Response) => {
   try {
     const result = await db.query(`SELECT name, description, is_enabled, input_schema FROM tools ORDER BY name`);
@@ -289,8 +231,7 @@ app.post('/admin/tools/:toolName/invoke', async (req: Request, res: Response) =>
   }
 });
 
-// ── Admin Routes: Observability ──────────────────────────────────────────
-
+// --- Admin Routes: Observability ---
 app.get('/admin/observability/attribute-extraction', async (req: Request, res: Response) => {
   try {
     const { student_id, limit = '50' } = req.query;
@@ -354,8 +295,7 @@ app.get('/admin/observability/decisions', async (req: Request, res: Response) =>
   }
 });
 
-// ── v3.0 Admin Routes: Cognitive Memory Architecture ─────────────────────
-
+// --- v3.0 Admin Routes: Cognitive Memory Architecture ---
 // Graph migration
 app.post('/admin/cognitive/migrate-graph', async (_req: Request, res: Response) => {
   try {
@@ -534,39 +474,6 @@ app.post('/admin/cognitive/sleep-mode/:studentId', async (req: Request, res: Res
   }
 });
 
-app.post('/admin/cognitive/sleep-mode/tick', async (_req: Request, res: Response) => {
-  try {
-    const result = await runTimezoneAwareTick();
-    res.json(result);
-  } catch (err) {
-    logger.error({ err }, '[Admin] Sleep tick failed');
-    res.status(500).json({ error: 'Sleep tick failed' });
-  }
-});
-
-app.get('/admin/cognitive/sleep-mode/preview', async (req: Request, res: Response) => {
-  try {
-    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
-    const candidates = await previewSleepCandidates(limit);
-    res.json({ candidates });
-  } catch (err) {
-    logger.error({ err }, '[Admin] Sleep preview failed');
-    res.status(500).json({ error: 'Sleep preview failed' });
-  }
-});
-
-app.post('/admin/cognitive/sleep-mode/bulk', async (req: Request, res: Response) => {
-  try {
-    const maxStudents = Math.min(500, Math.max(1, Number(req.body?.maxStudents) || 50));
-    await runNightlyConsolidation(maxStudents);
-    res.json({ ok: true, maxStudents });
-  } catch (err) {
-    logger.error({ err }, '[Admin] Sleep bulk failed');
-    res.status(500).json({ error: 'Sleep bulk failed' });
-  }
-});
-
-
 // Cognitive system config
 app.get('/admin/cognitive/config/:key', async (req: Request, res: Response) => {
   try {
@@ -588,23 +495,18 @@ app.post('/admin/cognitive/config/:key', async (req: Request, res: Response) => 
   }
 });
 
-// ── WhatsApp Webhook ───────────────────────────────────────────────────
-
+// --- WhatsApp Webhook ---
 app.use('/whatsapp', createWebhookRouter());
 
-// ── Startup ──────────────────────────────────────────────────────────────
-
+// --- Startup ---
 async function main() {
   await initializeDatabase();
-  await ensureIngestSchema().catch(err =>
-    logger.warn({ err }, '[Startup] syllabus ingest schema failed')
-  );
-
-  // Start timezone-aware sleep mode scheduler in background
+  
+  // Start sleep mode scheduler in background
   startSleepScheduler().catch(err => logger.error({ err }, '[Startup] Sleep scheduler failed'));
-
+  
   app.listen(PORT, () => {
-    logger.info(`[Server] WaxPrep v3.1 listening on port ${PORT}`);
+    logger.info(`[Server] WaxPrep v3.0 listening on port ${PORT}`);
   });
 }
 

@@ -646,7 +646,7 @@ export async function processTutorMessage(input: ProcessMessageInput): Promise<s
         studentId,
         selection.tool_name,
         params,
-        result.data ?? result.output,
+        (result.data as Record<string, unknown>) ?? String(result.output),
         result.latencyMs,
         result.success,
         result.error,
@@ -927,10 +927,10 @@ async function runPostTurn(
   if (turn.topic) {
     const examBoard =
       profile.culturalContext.examBoards?.[0] ||
-      (typeof activeAttributes['exam_target'] === 'string'
-        ? String(activeAttributes['exam_target'])
+      (typeof (activeAttributes as Record<string, unknown>)['exam_target'] === 'string'
+        ? String((activeAttributes as Record<string, unknown>)['exam_target'])
         : undefined) ||
-      undefined;
+      'WAEC';
 
     const decision = await assessCurriculum(
       turn.topic,
