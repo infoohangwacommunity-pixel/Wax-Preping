@@ -116,7 +116,6 @@ export async function initializeDatabase(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_student_archetypes_name ON student_archetypes (name);
     CREATE TABLE IF NOT EXISTS student_archetype_memberships (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       student_id TEXT NOT NULL,
