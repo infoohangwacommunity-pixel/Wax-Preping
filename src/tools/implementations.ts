@@ -176,7 +176,10 @@ async function handleCalculator(
 
   try {
     const mathjs = await import('mathjs');
-    const math = mathjs.create(mathjs.all || {}, {});
+    if (!mathjs.all) {
+      return { success: false, output: 'Calculator not available', latencyMs: 0 };
+    }
+    const math = mathjs.create(mathjs.all, {});
     const result = math.evaluate(expression);
 
     return {

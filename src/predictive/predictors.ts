@@ -24,7 +24,7 @@ export async function predictNextTopic(studentId: string): Promise<string | null
 
     const conceptData = recentConcepts.map(c => ({
       name: c.properties.name as string,
-      mastery: c.properties.retention_estimate as number || 0.1,
+      mastery: (c.properties.retention_estimate as number) || (c.properties.mastery_estimate as number) || 0.1,
       last_practiced: c.properties.last_practiced as string,
     }));
 
@@ -123,7 +123,7 @@ export async function predictFrustration(studentId: string): Promise<number> {
     // Trend: increasing or decreasing?
     const first = recentFrustration[0].properties.frustration_level as number || 0;
     const last = recentFrustration[recentFrustration.length - 1].properties.frustration_level as number || 0;
-    const trend = first - last; // Positive = decreasing, Negative = increasing
+    const trend = last - first; // Positive = decreasing, Negative = increasing
 
     // If trend is increasing frustration, predict higher
     const prediction = avgFrustration + (trend < 0 ? 0.2 : 0);

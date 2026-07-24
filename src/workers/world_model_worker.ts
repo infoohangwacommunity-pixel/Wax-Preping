@@ -11,11 +11,11 @@ async function runForAllActive(): Promise<void> {
   running = true;
   try {
     const result = await db.query(
-      `SELECT DISTINCT student_id FROM conversation_turns WHERE timestamp > NOW() - INTERVAL '7 days' AND total_turns > 3`
+      `SELECT student_id FROM conversation_turns WHERE timestamp > NOW() - INTERVAL '7 days' GROUP BY student_id HAVING COUNT(*) > 3`
     ).catch(() => ({ rows: [] }));
 
     for (const row of result.rows) {
-      await runWorldModel(row.student_id);
+      await runWorldModel(row.student_id).catch(err => logger.warn({ err, studentId: row.student_id }, '[WorldModelWorker] Failed'));
       await new Promise(r => setTimeout(r, 2000));
     }
   } finally {

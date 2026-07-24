@@ -80,7 +80,7 @@ export async function saveEpisode(turn: ConversationTurn): Promise<void> {
         modality: turn.modality,
         mastery_evidenced: turn.masteryEvidenced,
         emotional_valence: turn.aiAnalysis?.emotionalReading?.valence,
-        cognitive_load_estimate: turn.aiAnalysis?.cognitiveLoad ? parseInt(turn.aiAnalysis.cognitiveLoad as string) : undefined,
+        cognitive_load_estimate: turn.aiAnalysis?.cognitiveLoad ? parseInt(turn.aiAnalysis.cognitiveLoad as string, 10) : undefined,
       },
       embedding: vector,
       event_time: new Date(turn.timestamp),

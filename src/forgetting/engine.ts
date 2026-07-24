@@ -69,7 +69,7 @@ export async function retrieveMemories(
   // ===========================================================================
   const now = new Date();
   const aboveThreshold = scored.filter(({ chunk, activation }) => {
-    const passesActivation = activation > chunk.retrieval_threshold;
+    const passesActivation = activation >= chunk.retrieval_threshold;
     const passesOblivion = passesOblivionGate(chunk, now, params);
     return passesActivation && passesOblivion;
   });

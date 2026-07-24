@@ -198,7 +198,7 @@ Given exam targets, available time, and known subjects, generate a weekly study 
 Output JSON only:
 {"weeklyTargets": [{"week": 1, "subject": "string", "topics": ["topic1"], "hours": 4, "focus": "string"}], "examPrepMilestones": ["string"], "dailySchedule": {"morning": "string", "afternoon": "string", "evening": "string"}}`,
 
-  ...COGNITIVE_PROMPT_SEEDS,
+  ...(COGNITIVE_PROMPT_SEEDS || {}),
 };
 
 const promptCache = new Map<string, { text: string; expiresAt: number }>();
