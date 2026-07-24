@@ -103,7 +103,7 @@ export async function evolveComponent(componentId: string, currentContent: strin
   const estimatedNewFitness = Math.min(fitness + 0.05, 0.99);
 
   await db.query(
-    `UPDATE prompt_components SET content = $1, version = version + 1, updated_at = NOW() WHERE component_id = $2`,
+    `UPDATE prompt_components SET current_text = $1, generation = generation + 1 WHERE component_id = $2`,
     [newContent, componentId]
   );
 

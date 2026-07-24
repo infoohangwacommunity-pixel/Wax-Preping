@@ -271,6 +271,35 @@ function buildGoalContext(
     ...currentGoal.exampleApproaches.map(a => `  - ${a}`),
   ];
 
+  const discoveredForCurrent = currentGoal.targetAttributes
+    .filter(k => {
+      const attr = attributes[k];
+      if (!attr) return false;
+      const confidence = typeof attr === 'object' && attr !== null
+        ? (attr as Record<string, unknown>).confidence as number
+        : 0;
+      return confidence >= 0.6;
+    })
+    .map(k => {
+      const v = (attributes[k] as Record<string, unknown>).value;
+      return `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`;
+    });
+
+  const missingForCurrent = currentGoal.targetAttributes
+    .filter(k => {
+      const attr = attributes[k];
+      if (!attr) return true;
+      const confidence = typeof attr === 'object' && attr !== null
+        ? (attr as Record<string, unknown>).confidence as number
+        : 0;
+      return confidence < 0.6;
+    });
+
+  if (discoveredForCurrent.length > 0) {
+    parts.push(`\nALREADY DISCOVERED FOR THIS GOAL: ${discoveredForCurrent.join(', ')}`);
+    parts.push(`STILL NEED TO DISCOVER: ${missingForCurrent.join(', ')}`);
+  }
+
   if (satisfiedGoals.length > 0) {
     parts.push(`\nALREADY DISCOVERED:`);
     for (const g of satisfiedGoals) {

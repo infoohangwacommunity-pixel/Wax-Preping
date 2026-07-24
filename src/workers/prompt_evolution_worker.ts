@@ -5,11 +5,11 @@ import { evolveComponent } from '../reflection/evolution';
 import { logger } from '../middleware/logger';
 
 async function evolveAll(): Promise<void> {
-  const result = await db.query(`SELECT component_id, content FROM prompt_components`).catch(() => ({ rows: [] }));
+  const result = await db.query(`SELECT component_id, current_text FROM prompt_components`).catch(() => ({ rows: [] }));
   logger.info(`[PromptEvolution] Checking ${result.rows.length} components`);
 
   for (const row of result.rows) {
-    await evolveComponent(row.component_id, row.content).catch(() => {});
+    await evolveComponent(row.component_id, row.current_text).catch(() => {});
     await new Promise(r => setTimeout(r, 3000));
   }
 }

@@ -201,11 +201,11 @@ export async function getPrompt(componentId: string): Promise<string> {
 
   try {
     const result = await db.query(
-      `SELECT prompt_text FROM prompt_components WHERE component_id = $1 LIMIT 1`,
+      `SELECT current_text FROM prompt_components WHERE component_id = $1 LIMIT 1`,
       [componentId]
     );
     if (result.rows.length > 0) {
-      const text = result.rows[0].prompt_text as string;
+      const text = result.rows[0].current_text as string;
       promptCache.set(componentId, { text, expiresAt: Date.now() + CACHE_TTL_MS });
       return text;
     }
@@ -221,7 +221,7 @@ export async function getPrompt(componentId: string): Promise<string> {
 
   try {
     await db.query(
-      `INSERT INTO prompt_components (component_id, prompt_text, version)
+      `INSERT INTO prompt_components (component_id, current_text, generation)
        VALUES ($1, $2, 1)
        ON CONFLICT (component_id) DO NOTHING`,
       [componentId, seed]
@@ -236,9 +236,9 @@ export async function getPrompt(componentId: string): Promise<string> {
 
 export async function setPrompt(componentId: string, text: string): Promise<void> {
   await db.query(
-    `INSERT INTO prompt_components (component_id, prompt_text, version)
-     VALUES ($1, $2, COALESCE((SELECT MAX(version) FROM prompt_components WHERE component_id = $1), 0) + 1)
-     ON CONFLICT (component_id) DO UPDATE SET prompt_text = EXCLUDED.prompt_text, version = EXCLUDED.version, updated_at = NOW()`,
+    `INSERT INTO prompt_components (component_id, current_text, generation)
+     VALUES ($1, $2, COALESCE((SELECT MAX(generation) FROM prompt_components WHERE component_id = $1), 0) + 1)
+     ON CONFLICT (component_id) DO UPDATE SET current_text = EXCLUDED.current_text, generation = EXCLUDED.generation`,
     [componentId, text]
   );
   promptCache.delete(componentId);
