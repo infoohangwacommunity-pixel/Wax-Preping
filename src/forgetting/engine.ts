@@ -84,10 +84,11 @@ export async function retrieveMemories(
   // ===========================================================================
   // STAGE 6: Update access statistics
   // ===========================================================================
-  for (const { node, chunk, activation } of results) {
+  for (let i = 0; i < results.length; i++) {
+    const { node, chunk, activation } = results[i];
     const strengthened = strengthenMemory(chunk, true);
     await updateGraphNodeAccess(node.id, strengthened);
-    await logMemoryAccess(studentId, node.id, node.labels[0], query, activation, true, results.indexOf({ node, chunk, activation }));
+    await logMemoryAccess(studentId, node.id, node.labels[0], query, activation, true, i);
   }
 
   logger.debug(

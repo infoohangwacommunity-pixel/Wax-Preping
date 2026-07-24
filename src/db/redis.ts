@@ -9,11 +9,27 @@ export async function getRedis(): Promise<RedisClientType | null> {
 
   connectPromise = (async () => {
     try {
-      const client = createClient({ url: process.env.REDIS_URL }) as RedisClientType;
-      client.on('error', err => logger.debug({ err }, '[Redis] error'));
+      const client = createClient({
+        url: process.env.REDIS_URL,
+        socket: {
+          connectTimeout: 10_000,
+          reconnectStrategy: (retries: number) => {
+            if (retries > 20) {
+              logger.error('[Redis] Max reconnection retries reached');
+              return new Error('Max retries');
+            }
+            const delay = Math.min(retries * 500, 10_000);
+            logger.warn({ retries, delay }, '[Redis] Reconnecting');
+            return delay;
+          },
+        },
+      }) as RedisClientType;
+      client.on('error', err => logger.warn({ err }, '[Redis] Connection error'));
       await client.connect();
+      logger.info('[Redis] Connected');
       return client;
-    } catch {
+    } catch (err) {
+      logger.error({ err }, '[Redis] Connection failed');
       connectPromise = null;
       return null;
     }

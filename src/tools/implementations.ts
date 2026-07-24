@@ -175,7 +175,8 @@ async function handleCalculator(
   }
 
   try {
-    const math = await import('mathjs');
+    const mathjs = await import('mathjs');
+    const math = mathjs.create(mathjs.all || {}, {});
     const result = math.evaluate(expression);
 
     return {

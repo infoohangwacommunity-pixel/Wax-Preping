@@ -59,8 +59,11 @@ function validateStatement(sql: string): { safe: boolean; reason: string } {
 
   if (!/^(SELECT|UPDATE)\b/i.test(upper)) return { safe: false, reason: 'Statement must begin with SELECT or UPDATE' };
 
-  if (/^UPDATE\b/i.test(upper) && !/\bWHERE\b/i.test(upper)) {
-    return { safe: false, reason: 'UPDATE without WHERE is not allowed' };
+  if (/^UPDATE\b/i.test(upper)) {
+    const whereMatch = upper.match(/\bWHERE\b\s+(.+?)(?:\s*;?\s*$|\s+LIMIT\b|\s+RETURNING\b|\s*$)/i);
+    if (!whereMatch || !whereMatch[1] || whereMatch[1].trim().length < 3) {
+      return { safe: false, reason: 'UPDATE must have a meaningful WHERE clause' };
+    }
   }
 
   const tablesMentioned = ALLOWED_TABLES.filter(t => new RegExp(`\\b${t}\\b`, 'i').test(normalized));

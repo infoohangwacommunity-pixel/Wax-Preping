@@ -17,6 +17,7 @@
  */
 import { db } from '../db/client';
 import { logger } from '../middleware/logger';
+import { COGNITIVE_PROMPT_SEEDS } from './cognitive_prompts';
 
 export const PROMPT_SEEDS: Record<string, string> = {
   'perception.v1': `You are the perception layer of Wax, an AI tutor for Nigerian secondary-school students.
@@ -190,6 +191,14 @@ Rules:
 
 Output JSON only:
 {"nextTopic": "...", "nextSubject": "...", "reasoning": "...", "suggestedStrategy": "...", "suggestedTools": ["..."]}`,
+
+  'study_plan.v1': `You are a study plan generator for Wax, an AI tutor for Nigerian secondary-school students.
+Given exam targets, available time, and known subjects, generate a weekly study plan.
+
+Output JSON only:
+{"weeklyTargets": [{"week": 1, "subject": "string", "topics": ["topic1"], "hours": 4, "focus": "string"}], "examPrepMilestones": ["string"], "dailySchedule": {"morning": "string", "afternoon": "string", "evening": "string"}}`,
+
+  ...COGNITIVE_PROMPT_SEEDS,
 };
 
 const promptCache = new Map<string, { text: string; expiresAt: number }>();

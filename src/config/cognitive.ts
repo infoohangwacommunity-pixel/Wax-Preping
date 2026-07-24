@@ -58,6 +58,23 @@ export async function setCognitiveConfig<K extends keyof CognitiveConfigMap>(
 }
 
 export async function getSegmentationConfig(studentId?: string): Promise<SegmentationConfig> {
+  const fallbackConfig: SegmentationConfig = {
+    id: 'default',
+    student_id: null,
+    weights: { topic_drift: 0.35, emotional: 0.25, cognitive: 0.25, time: 0.10, pedagogical: 0.05 },
+    thresholds: { boundary: 0.6, time_gap: 30, system1_trigger: 0.3 },
+    features: {
+      use_embedding_drift: true,
+      use_emotional_delta: true,
+      use_lexical_shift: true,
+      use_cognitive_task_detection: true,
+      use_pedagogical_transition: true,
+    },
+    model_config: { system1_model_tier: 'fast', system2_model_tier: 'smart' },
+    created_at: new Date(),
+    updated_at: new Date(),
+  };
+
   try {
     const query = studentId
       ? `SELECT * FROM segmentation_config WHERE student_id = $1 LIMIT 1`
@@ -79,31 +96,17 @@ export async function getSegmentationConfig(studentId?: string): Promise<Segment
       };
     }
 
-    // Fall back to global default
     if (studentId) {
       return getSegmentationConfig(undefined);
     }
 
-    // Ultimate fallback — should never happen if migration ran
-    return {
-      id: 'default',
-      student_id: null,
-      weights: { topic_drift: 0.35, emotional: 0.25, cognitive: 0.25, time: 0.10, pedagogical: 0.05 },
-      thresholds: { boundary: 0.6, time_gap: 30, system1_trigger: 0.3 },
-      features: {
-        use_embedding_drift: true,
-        use_emotional_delta: true,
-        use_lexical_shift: true,
-        use_cognitive_task_detection: true,
-        use_pedagogical_transition: true,
-      },
-      model_config: { system1_model_tier: 'fast', system2_model_tier: 'smart' },
-      created_at: new Date(),
-      updated_at: new Date(),
-    };
+    return fallbackConfig;
   } catch (err) {
     logger.warn({ err }, '[CognitiveConfig] Failed to load segmentation config');
-    return getSegmentationConfig(undefined);
+    if (studentId) {
+      return getSegmentationConfig(undefined);
+    }
+    return fallbackConfig;
   }
 }
 

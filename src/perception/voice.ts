@@ -20,7 +20,6 @@ export async function transcribeVoice(audioBuffer: Buffer): Promise<VoiceTranscr
     const form = new FormData();
     form.append('file', audioBuffer, { filename: 'voice.ogg', contentType: 'audio/ogg' });
     form.append('model', 'whisper-1');
-    form.append('language', 'en');
 
     const response = await axios.post('https://api.openai.com/v1/audio/transcriptions', form, {
       headers: { ...form.getHeaders(), Authorization: `Bearer ${apiKey}` },

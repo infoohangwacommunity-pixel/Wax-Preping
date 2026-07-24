@@ -55,6 +55,32 @@ export async function scheduleConceptReview(
        mastery_level = EXCLUDED.mastery_level`,
     [studentId, concept, subject, nextReviewAt.toISOString(), nextInterval, reviewCount + 1, masteryLevel]
   );
+
+  // v3.1: Update concept retention curve for predictive model
+  const retentionEstimate = Math.max(0, 1 - (1 - masteryLevel) * Math.pow(0.5, (reviewCount + 1)));
+  const optimalInterval = nextInterval * 24; // days to hours
+  await db.query(
+    `INSERT INTO concept_retention_curves (
+      student_id, concept_name, first_studied_at, last_reviewed_at, review_count,
+      optimal_interval_hours, retention_estimate, next_predicted_review
+    ) VALUES ($1, $2, $3, $4, $5, COALESCE($6, 24), $7, $8)
+    ON CONFLICT (student_id, concept_name) DO UPDATE SET
+      last_reviewed_at = EXCLUDED.last_reviewed_at,
+      review_count = EXCLUDED.review_count,
+      optimal_interval_hours = EXCLUDED.optimal_interval_hours,
+      retention_estimate = EXCLUDED.retention_estimate,
+      next_predicted_review = EXCLUDED.next_predicted_review,
+      first_studied_at = COALESCE(concept_retention_curves.first_studied_at, EXCLUDED.first_studied_at)`,
+    [
+      studentId, concept,
+      new Date().toISOString(),
+      new Date().toISOString(),
+      reviewCount + 1,
+      optimalInterval,
+      retentionEstimate,
+      nextReviewAt.toISOString(),
+    ]
+  ).catch(() => {}); // non-critical — retention curve is supplementary
 }
 
 export async function getDueReviews(

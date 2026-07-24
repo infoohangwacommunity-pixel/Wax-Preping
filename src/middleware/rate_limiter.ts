@@ -1,45 +1,51 @@
 /**
- * Sliding-window rate limiter backed by Redis with an in-memory fallback.
+ * Rate limiter with Redis-backed sliding window.
+ * Falls back to in-memory if Redis is unavailable.
  */
 import { getRedis } from '../db/redis';
+import { logger } from './logger';
 
-const inMemory: Map<string, { count: number; resetAt: number }> = new Map();
+const inMemory = new Map<string, { count: number; resetAt: number }>();
+
+function sweepInMemory(): void {
+  const now = Date.now();
+  for (const [key, entry] of inMemory) {
+    if (entry.resetAt <= now) inMemory.delete(key);
+  }
+}
 
 export async function checkRateLimit(
   key: string,
   maxRequests: number,
   windowSeconds: number
-): Promise<{ allowed: boolean; remaining: number; resetAt: number }> {
+): Promise<{ allowed: boolean }> {
   const now = Date.now();
-  const resetAt = now + windowSeconds * 1000;
-  const client = await getRedis();
-
-  if (!client) {
-    const entry = inMemory.get(key);
-    if (!entry || entry.resetAt < now) {
-      inMemory.set(key, { count: 1, resetAt });
-      return { allowed: true, remaining: maxRequests - 1, resetAt };
-    }
-    entry.count++;
-    return {
-      allowed: entry.count <= maxRequests,
-      remaining: Math.max(0, maxRequests - entry.count),
-      resetAt: entry.resetAt,
-    };
-  }
 
   try {
-    const multi = client.multi();
-    multi.incr(key);
-    multi.expire(key, windowSeconds);
-    const results = await multi.exec();
-    const count = results![0] as number;
-    return {
-      allowed: count <= maxRequests,
-      remaining: Math.max(0, maxRequests - count),
-      resetAt,
-    };
-  } catch {
-    return { allowed: true, remaining: maxRequests, resetAt };
+    const redis = await getRedis();
+    if (redis) {
+      const redisKey = `ratelimit:${key}`;
+      const results = await redis
+        .multi()
+        .incr(redisKey)
+        .expire(redisKey, windowSeconds)
+        .exec();
+
+      const count = (results?.[0] as number | null) ?? 0;
+      return { allowed: count <= maxRequests };
+    }
+  } catch (err) {
+    logger.warn({ err }, '[RateLimiter] Redis error, falling back to in-memory');
   }
+
+  sweepInMemory();
+
+  const entry = inMemory.get(key);
+  if (!entry || entry.resetAt <= now) {
+    inMemory.set(key, { count: 1, resetAt: now + windowSeconds * 1000 });
+    return { allowed: true };
+  }
+
+  entry.count++;
+  return { allowed: entry.count <= maxRequests };
 }

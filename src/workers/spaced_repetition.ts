@@ -10,9 +10,13 @@ import { generatePersonalizedNotification } from '../brain/notification_agent';
 import { sendTextMessage } from '../whatsapp/sender';
 import { logger } from '../middleware/logger';
 
-const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID!;
+const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
 async function sendDueReviews(): Promise<void> {
+  if (!phoneNumberId) {
+    logger.warn('[SpacedRep] Missing WHATSAPP_PHONE_NUMBER_ID — skipping');
+    return;
+  }
   const result = await db.query(
     `SELECT DISTINCT student_id FROM spaced_reviews WHERE next_review_at <= NOW() + INTERVAL '2 hours'`
   ).catch(() => ({ rows: [] }));
@@ -40,8 +44,12 @@ async function sendDueReviews(): Promise<void> {
     );
 
     if (message && phoneNumberId) {
-      await sendTextMessage(phoneNumberId, row.student_id, message);
-      await db.query(`UPDATE notification_queue SET sent = TRUE, sent_at = NOW() WHERE dedupe_key = $1`, [dedupeKey]).catch(() => {});
+      try {
+        await sendTextMessage(phoneNumberId, row.student_id, message);
+        await db.query(`UPDATE notification_queue SET sent = TRUE, sent_at = NOW() WHERE dedupe_key = $1`, [dedupeKey]).catch(() => {});
+      } catch (err) {
+        logger.error({ err }, '[SpacedRep] Failed to send review notification');
+      }
       await new Promise(r => setTimeout(r, 500));
     }
   }

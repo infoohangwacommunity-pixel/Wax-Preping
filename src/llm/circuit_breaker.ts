@@ -11,6 +11,7 @@ export class CircuitBreaker {
   private failures = 0;
   private lastFailureTime = 0;
   private successCount = 0;
+  private busy = false;
 
   constructor(
     private readonly name: string,
@@ -20,6 +21,8 @@ export class CircuitBreaker {
   ) {}
 
   async call<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.busy) throw new Error(`Circuit breaker ${this.name} — concurrent call blocked`);
+
     if (this.state === 'OPEN') {
       if (Date.now() - this.lastFailureTime > this.timeoutMs) {
         this.state = 'HALF_OPEN';
@@ -30,6 +33,7 @@ export class CircuitBreaker {
       }
     }
 
+    this.busy = true;
     try {
       const result = await fn();
       this.onSuccess();
@@ -37,6 +41,8 @@ export class CircuitBreaker {
     } catch (err) {
       this.onFailure();
       throw err;
+    } finally {
+      this.busy = false;
     }
   }
 

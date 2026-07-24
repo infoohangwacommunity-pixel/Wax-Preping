@@ -317,6 +317,11 @@ async function discoverSyllabusUrls(query: string, limit: number): Promise<strin
     const u = (h.url || '').trim();
     if (!u || seen.has(u)) continue;
     if (!/^https?:\/\//i.test(u)) continue;
+    try {
+      const parsed = new URL(u);
+      if (['localhost', '127.0.0.1', '0.0.0.0', '::1'].includes(parsed.hostname)) continue;
+      if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(parsed.hostname)) continue;
+    } catch { continue; }
     // Prefer PDFs and education domains but do not hardcode boards
     seen.add(u);
     urls.push(u);

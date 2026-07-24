@@ -22,27 +22,32 @@ export async function saveEpisode(turn: ConversationTurn): Promise<void> {
   const { vector, provider } = await embed(textToEmbed);
   const embeddingStr = `[${vector.join(',')}]`;
 
-  await db.query(
-    `INSERT INTO conversation_turns (
+  try {
+    await db.query(
+      `INSERT INTO conversation_turns (
       turn_id, session_id, student_id, turn_number,
       student_message, tutor_response, ai_analysis, modality,
       model_used, latency_ms, tokens_in, tokens_out, cost_usd,
       tools_used, embedding, embedding_provider, topic, subject, mastery_evidenced, timestamp
     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::vector,$16,$17,$18,$19,$20)
     ON CONFLICT (turn_id) DO NOTHING`,
-    [
-      turn.turnId, turn.sessionId, turn.studentId, turn.turnNumber,
-      turn.studentMessage, turn.tutorResponse,
-      JSON.stringify(turn.aiAnalysis || {}),
-      turn.modality || 'text', turn.modelUsed,
-      turn.latencyMs, turn.tokensIn, turn.tokensOut, turn.costUsd,
-      turn.toolsUsed || [],
-      embeddingStr, provider,
-      turn.topic || null, turn.subject || null,
-      turn.masteryEvidenced || false,
-      turn.timestamp,
-    ]
-  );
+      [
+        turn.turnId, turn.sessionId, turn.studentId, turn.turnNumber,
+        turn.studentMessage, turn.tutorResponse,
+        JSON.stringify(turn.aiAnalysis || {}),
+        turn.modality || 'text', turn.modelUsed,
+        turn.latencyMs, turn.tokensIn, turn.tokensOut, turn.costUsd,
+        turn.toolsUsed || [],
+        embeddingStr, provider,
+        turn.topic || null, turn.subject || null,
+        turn.masteryEvidenced || false,
+        turn.timestamp,
+      ]
+    );
+  } catch (err) {
+    logger.error({ err, turnId: turn.turnId }, '[Episodic] CRITICAL: Failed to persist conversation turn');
+    return;
+  }
 
   // v3.0: Write to cognitive graph
   try {

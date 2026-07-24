@@ -24,7 +24,7 @@ export async function predictNextTopic(studentId: string): Promise<string | null
 
     const conceptData = recentConcepts.map(c => ({
       name: c.properties.name as string,
-      mastery: c.properties.mastery_estimate as number || 0.1,
+      mastery: c.properties.retention_estimate as number || 0.1,
       last_practiced: c.properties.last_practiced as string,
     }));
 
@@ -81,12 +81,12 @@ Return ONLY JSON: {"predicted_topic": "string", "predicted_subject": "string", "
  */
 export async function predictStrugglingConcepts(studentId: string): Promise<string[]> {
   try {
-    const result = await db.query(
-      `SELECT concept_name, mastery_estimate FROM concept_retention_curves
+      const result = await db.query(
+      `SELECT concept_name, retention_estimate FROM concept_retention_curves
        WHERE student_id = $1
-         AND mastery_estimate < 0.4
+         AND retention_estimate < 0.4
          AND (last_reviewed_at IS NULL OR last_reviewed_at < NOW() - INTERVAL '3 days')
-       ORDER BY mastery_estimate ASC
+       ORDER BY retention_estimate ASC
        LIMIT 5`,
       [studentId]
     );

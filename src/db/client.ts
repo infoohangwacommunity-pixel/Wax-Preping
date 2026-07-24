@@ -807,7 +807,8 @@ export async function initializeDatabase(): Promise<void> {
       detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       resolved_at TIMESTAMPTZ,
       resolution_type TEXT,
-      confidence FLOAT NOT NULL DEFAULT 0.7
+      confidence FLOAT NOT NULL DEFAULT 0.7,
+      UNIQUE(student_id, attribute_key)
     );
     CREATE INDEX IF NOT EXISTS idx_contradictions_student ON memory_contradictions(student_id, detected_at DESC);
   `);

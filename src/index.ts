@@ -75,7 +75,7 @@ app.get('/health', (_req: Request, res: Response) => {
 
 // --- Admin Routes ---
 // All admin routes require authentication and rate limiting
-app.use('/admin', requireAdminRateLimit, requireAdmin);
+app.use('/admin', requireAdmin, requireAdminRateLimit);
 
 // --- Admin Routes: Student Profile ---
 app.get('/admin/students/:studentId/attributes', async (req: Request, res: Response) => {
